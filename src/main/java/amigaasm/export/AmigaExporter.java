@@ -259,7 +259,7 @@ public class AmigaExporter implements CancelledListener {
 					String prefix = " ";
 					for (int i = 0; i < numOps; ++i) {
 						Reference[] opRefs = codeUnit.getOperandReferences(i);
-						if (opRefs != null) {
+						if (opRefs != null && opRefs.length != 0) {
 							for (int j = 0; j < opRefs.length; ++j) {
 								Reference op = opRefs[j];
 								if (op.isMemoryReference()) {
@@ -282,7 +282,26 @@ public class AmigaExporter implements CancelledListener {
 								Instruction inst = (Instruction)codeUnit;
 								int type = inst.getOperandType(i);
 								if (type == OperandType.DYNAMIC) { // (A0)+ etc
+									if (i == 1 && mnemonic.equals("move") || mnemonic.startsWith("move.")) {
+										// Note: move encodes the destination first but it is the second operand (i == 1)
+										// TODO
+									} else {
+										// move's source and all others encode the address mode the same way
+										// TODO: I guess there are some special commands which always use dynamic addressing
+										int mode = (bytes[1] >> 3) & 0x7;
+										int reg = bytes[1] & 0x7;
+																				
+										// TODO ...
+										// TODO: maybe use regex, some like (A0)+ can be used "as is"
+										// TODO: I guess only index and displacement should be converted (e.g. use label displacements etc)
+									}
+									// TODO: maybe we have to parse the mode from the opcode (is easy for all but move)
 									System.out.println("foo");
+								} else if (type == OperandType.SCALAR) {
+									writer.write(prefix + inst.getScalar(i).toString(16, true, true, "$", ""));
+								} else if (type == OperandType.REGISTER) {
+									// TODO: is SP already displayed this way or as A7? if so, adjust
+									writer.write(prefix + inst.getRegister(i).toString());
 								} else {
 									System.out.println("foo");
 								}
