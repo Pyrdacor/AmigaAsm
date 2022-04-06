@@ -39,6 +39,7 @@ import ghidra.program.model.mem.Memory;
 import ghidra.program.model.mem.MemoryAccessException;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.Reference;
+import ghidra.program.model.symbol.StackReference;
 import ghidra.util.task.CancelledListener;
 import ghidra.util.task.TaskMonitor;
 
@@ -233,6 +234,9 @@ public class AmigaExporter implements CancelledListener {
 		String label = codeUnit.getLabel();
 		
 		if (label != null) {
+			if (label.equals("FUN_0021f4e6")) {
+				int x = 0;
+			}
 			writeLine(writer, label + ":");
 			
 			// If there is a label, add this as a reference.
@@ -275,6 +279,14 @@ public class AmigaExporter implements CancelledListener {
 									}
 								} else if (op.isRegisterReference()) {
 									System.out.println("foo");
+								} else if (op.isStackReference()) {
+									StackReference sr = (StackReference)op;
+									
+									if (sr.getStackOffset() < 0) {
+										writer.write(prefix + "-(SP)");
+									} else {
+										writer.write(prefix + "(SP)+");
+									}
 								} else {
 									System.out.println(String.format("Unsupported operand '%s' at address %08x.", op.getReferenceType().getName(), address.getUnsignedOffset()));
 								}
@@ -284,6 +296,26 @@ public class AmigaExporter implements CancelledListener {
 								Instruction inst = (Instruction)codeUnit;
 								int type = inst.getOperandType(i);
 								if (type == OperandType.DYNAMIC) { // (A0)+ etc
+									if (mnemonic.startsWith("movem")) {
+										boolean toRegister = (bytes[0] & 0x4) != 0;
+										
+										if (toRegister && i == 1 ||
+											!toRegister && i == 0) {
+											// reg list
+											String code = codeUnit.toString();
+											Pattern pattern = Pattern.compile("\\{.*\\}");
+											Matcher matcher = pattern.matcher(code);
+											
+											if (matcher.find()) {
+												
+												writer.write(prefix + code.substring(matcher.start() + 1, matcher.end() - 1).trim().replace(' ', '/'));
+												continue;
+												
+											} else {
+												// TODO: throw
+											}
+										}
+									}
 									int mode = (bytes[1] >> 3) & 0x7;
 									int reg = bytes[1] & 0x7;
 									if (i == 1 && mnemonic.equals("move") || mnemonic.startsWith("move.")) {
@@ -337,7 +369,13 @@ public class AmigaExporter implements CancelledListener {
 								} else if (type == OperandType.SCALAR) {
 									writer.write(prefix + inst.getScalar(i).toString(16, true, true, "$", ""));
 								} else if (type == OperandType.REGISTER) {
-									writer.write(prefix + trimRegSuffix(inst.getRegister(i).toString()));
+									String reg = trimRegSuffix(inst.getRegister(i).toString());
+									if (reg.equals("SP")) {
+										// -(SP) is stored as SP for some reason
+										// but it is never used directly as SP
+										reg = "-(SP)";
+									}
+									writer.write(prefix + reg);
 								} else if (type == (OperandType.REGISTER | OperandType.INDIRECT)) {
 									writer.write(prefix + "(" + trimRegSuffix(inst.getRegister(i).toString()) + ")");
 								} else {
