@@ -29,6 +29,7 @@ import ghidra.program.model.data.DWordDataType;
 import ghidra.program.model.data.DataType;
 import ghidra.program.model.data.DataTypeComponent;
 import ghidra.program.model.data.Pointer;
+import ghidra.program.model.data.QWordDataType;
 import ghidra.program.model.data.ShortDataType;
 import ghidra.program.model.data.SignedByteDataType;
 import ghidra.program.model.data.SignedDWordDataType;
@@ -197,7 +198,7 @@ public class AmigaExporter implements CancelledListener {
 		
 		if (lastBlockIndex != blockIndex) {
 			int hunkIndex = -1;
-			if (address.getUnsignedOffset() < 0x21f000) {
+			if (address.getUnsignedOffset() < 0x21f000 || address.getUnsignedOffset() >= 0x31f000) {
 				currentHunkType = hunkName; // should be "EXEC"
 				if (currentHunkType.equals("EXEC")) {
 					System.out.println("Skipping EXEC section.");
@@ -333,7 +334,7 @@ public class AmigaExporter implements CancelledListener {
 		
 		long addressOffset = address.getUnsignedOffset();
 		
-		if (addressOffset == 0x002498a6 || addressOffset == 0x261c10 || addressOffset == 0x2677da) {
+		if (addressOffset == 0x002498a6 || addressOffset == 0x261c10) {
 			// TODO: check here
 			int x = 0;
 		}
@@ -748,6 +749,13 @@ public class AmigaExporter implements CancelledListener {
 			data = ensureData(data, memory, address, 4);
 			write("\tdc.l " + this.getLabelForAddress(memory, data, dataOffset));
 			return 4;
+		} else if (mnemonic.equals("dq")) {
+			data = ensureData(data, memory, address, 8);
+			writeLine(String.format("\tdc.l $%02x%02x%02x%02x", data[dataOffset], data[dataOffset + 1],
+				data[dataOffset + 2], data[dataOffset + 3]));
+			write(String.format("\tdc.l $%02x%02x%02x%02x", data[dataOffset + 4], data[dataOffset + 5],
+				data[dataOffset + 6], data[dataOffset + 7]));
+			return 4;
 		} else if (mnemonic.equals("char")) {
 			data = ensureData(data, memory, address, 1);
 			write("\tdc.b " + (data[dataOffset] < 0x20 ? String.format("%x", data[dataOffset]) : "'" + (char)data[dataOffset] + "'"));
@@ -782,7 +790,7 @@ public class AmigaExporter implements CancelledListener {
 						if (typeName.equals("ds") || typeName.equals("db") ||
 							typeName.equals("dw") || typeName.equals("ddw") ||
 							typeName.equals("dl") || typeName.equals("addr") ||
-							typeName.equals("char")) {						
+							typeName.equals("char") || typeName.equals("dq")) {						
 							writeLine("\t; " + mnemonic);
 						} else {					
 							monitor.setMessage(String.format("Unrecognized data type or mnemonic found in hunk %d at address %08x: %s", hunkIndex, address.getUnsignedOffset(), mnemonic));
@@ -872,7 +880,11 @@ public class AmigaExporter implements CancelledListener {
 					writeData("dl", data, dataOffset, typeManager, monitor,
 						address, hunkIndex, memory);
 					return 4;
-				} else if (dataType instanceof CharDataType) {
+				} else if (dataType instanceof QWordDataType) {
+					writeData("dq", data, dataOffset, typeManager, monitor,
+						address, hunkIndex, memory);
+					return 8;
+				}  else if (dataType instanceof CharDataType) {
 					writeData("char", data, dataOffset, typeManager, monitor,
 						address, hunkIndex, memory);
 					return 1;
@@ -951,9 +963,22 @@ public class AmigaExporter implements CancelledListener {
 	private String getLabelForAddress(Address address, byte[] addressData, int dataOffset) {
 		
 		long offset = bytesToBigEndianLong(addressData, dataOffset);
+		
+		if (offset == 0) {
+			return "0";
+		} else if (offset == -1) {
+			return "-1";
+		}
+		
 		long current = address.getOffset();
 		long add = offset - current;
-		address = address.add(add);
+		
+		try {
+			address = address.add(add);
+		} catch (Exception e) {
+			System.out.println(String.format("Label couldn't be determined for offset $%08x. Referenced at address %08x.", offset & 0xffffffff, current));
+			return String.format("$%08x", offset & 0xffffffff);
+		}
 
 		return getLabelForAddress(address, offset);
 	}
@@ -1028,7 +1053,7 @@ public class AmigaExporter implements CancelledListener {
 			
 		reg += String.format("%d", (flags >> 4) & 0x7);
 		
-		String d = String.format("$%02x", Math.abs(displacement));
+		String d = String.format("$%02x", Math.abs((int)displacement) & 0xff);
 		
 		if (displacement < 0) {
 			d = "-" + d;
@@ -1126,17 +1151,22 @@ public class AmigaExporter implements CancelledListener {
 		} else if (dataType instanceof SignedByteDataType) {
 			write(String.format("\tdc.b %d", data[dataOffset]));
 		} else if (dataType instanceof Undefined2DataType ||
-				   dataType instanceof WordDataType) {
-			write(String.format("\tdc.w $%04x", readDisplacement(data, dataOffset)));
+				   dataType instanceof WordDataType ||
+				   dataType instanceof UnsignedShortDataType) {
+			write(String.format("\tdc.w $%04x", readDisplacement(data, dataOffset) & 0xffff));
 		} else if (dataType instanceof SignedWordDataType ||
 				   dataType instanceof ShortDataType) {
 			write(String.format("\tdc.w %d", readDisplacement(data, dataOffset)));
 		} else if (dataType instanceof Undefined4DataType ||
 				   dataType instanceof DWordDataType ||
-				   dataType instanceof UnsignedIntegerDataType) {
-			write(String.format("\tdc.l $%04x", bytesToBigEndianLong(data, dataOffset)));
+				   dataType instanceof UnsignedIntegerDataType ||
+				   dataType instanceof UnsignedLongDataType) {
+			write(String.format("\tdc.l $%08x", bytesToBigEndianLong(data, dataOffset) & 0xffffffff));
 		} else if (dataType instanceof SignedDWordDataType) {
 			write(String.format("\tdc.l %d", bytesToBigEndianLong(data, dataOffset)));
+		} else if (dataType instanceof QWordDataType) {
+			write(String.format("\tdc.l %d", bytesToBigEndianLong(data, dataOffset)));
+			write(String.format("\tdc.l %d", bytesToBigEndianLong(data, dataOffset + 4)));
 		} else if (dataType instanceof CharDataType) {
 			byte ch = data[dataOffset];
 			if (ch < 0x20) {
@@ -1157,22 +1187,57 @@ public class AmigaExporter implements CancelledListener {
 		
 		if (size == 1) {
 			value = data[dataOffset];
-			write(String.format("\tdc.b %02x", value));
+			write(String.format("\tdc.b $%02x", value & 0xff));
 		} else if (size == 2) {
 			value = readDisplacement(data, dataOffset);
-			write(String.format("\tdc.w %04x", value));
+			write(String.format("\tdc.w $%04x", value & 0xffff));
 		} else if (size == 4) {
 			value = bytesToBigEndianLong(data, dataOffset);
-			write(String.format("\tdc.l %08x", value));
+			write(String.format("\tdc.l $%08x", value & 0xffffffff));
 		} else {
 			throw new RuntimeException(String.format("Invalid enum value size %d at address %08x.", size, address.getUnsignedOffset()));
 		}
 		
 		String name = dataType.getName(value);
 		
-		if (name != null) {
-			write(" ; " + name);
+		if (name == null) {
+			// Try flag values (EnumValue1 | EnumValue2)
+			name = getFlagEnumNames(dataType, value);
 		}
+		
+		if (name != null) {
+			write(" ; = " + name);
+		} else {
+			write(String.format(" ; Invalid enum value: %d", value));
+		}
+	}
+	
+	private String getFlagEnumNames(ghidra.program.model.data.Enum enumType, long value) {
+		
+		int bits = enumType.getLength() * 8;
+		String names = "";
+		
+		for (int i = 0; i < bits; ++i) {
+			
+			long bitValue = 1 << i;
+			
+			if ((value & bitValue) != 0) {
+				
+				String name = enumType.getName(bitValue);
+				
+				if (name == null) {
+					return null;
+				}
+				
+				if (names.isEmpty()) {
+					names = name;
+				} else {
+					names += " | " + name;
+				}
+			}
+		}
+		
+		return names;
 	}
 	
 	private String toCTypeName(DataType dataType, String mnemonic) {
