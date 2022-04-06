@@ -37,6 +37,11 @@ public class AmigaAsmExporter extends Exporter {
 
 	private AmigaExporter exporter = new AmigaExporter();
 	public static final String OptionExportComments = "Export comments";
+	public static final String OptionExport68000 = "68000 compatible";
+	public static final String OptionExportNewline = "Newline";
+	public static final String OptionExportNewlineCarriageReturn = "\\r";
+	public static final String OptionExportNewlineLineFeed = "\\n";
+	public static final String OptionExportNewlineBoth = "\\r\\n";
 	
 	/**
 	 * Exporter constructor.
@@ -62,8 +67,14 @@ public class AmigaAsmExporter extends Exporter {
 	public List<Option> getOptions(DomainObjectService domainObjectService) {
 		List<Option> list = new ArrayList<>();
 
-		// TODO: If this exporter has custom options, add them to 'list'
 		list.add(new Option(OptionExportComments, true));
+		list.add(new Option(OptionExport68000, false));
+		
+		List<String> newlineOptions = new ArrayList<String>();
+		newlineOptions.add(OptionExportNewlineBoth);
+		newlineOptions.add(OptionExportNewlineLineFeed);
+		newlineOptions.add(OptionExportNewlineCarriageReturn);
+		list.add(new RadioButtonOptions(OptionExportNewline, newlineOptions, 0));
 
 		return list;
 	}
