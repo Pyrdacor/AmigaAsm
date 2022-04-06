@@ -333,12 +333,6 @@ public class AmigaExporter implements CancelledListener {
 			ProgramDataTypeManager typeManager,	int hunkIndex, TaskMonitor monitor) {
 		
 		long addressOffset = address.getUnsignedOffset();
-		
-		if (addressOffset == 0x002498a6 || addressOffset == 0x261c10) {
-			// TODO: check here
-			int x = 0;
-		}
-			
 		String label = codeUnit.getLabel();
 		
 		if (label != null) {
@@ -420,12 +414,20 @@ public class AmigaExporter implements CancelledListener {
 					
 					write("\t" + mnemonic);
 					
+					// movem reg lists are sometimes treated as data refs which we will disallow
+					int disallowRefOperandIndex = -1;
+					if (opcode.equals("movem")) {
+						
+						boolean toRegister = (bytes[0] & 0x4) != 0;
+						disallowRefOperandIndex = toRegister ? 1 : 0;						
+					}
+					
 					int numOps = codeUnit.getNumOperands();
 					int byteOffset = 2;
 					String prefix = " ";
 					for (int i = 0; i < numOps; ++i) {
 						Reference[] opRefs = codeUnit.getOperandReferences(i);
-						if (opRefs != null && opRefs.length != 0) {
+						if (disallowRefOperandIndex != i && opRefs != null && opRefs.length != 0) {
 							for (int j = 0; j < opRefs.length; ++j) {
 								Reference op = opRefs[j];
 								if (opRefs.length > 1 && !op.isPrimary()) {
@@ -500,8 +502,6 @@ public class AmigaExporter implements CancelledListener {
 										// TODO: maybe use address?
 										throw new RuntimeException(String.format("Missing label for target address %08x.", addr.getUnsignedOffset()));
 									}
-									} else if (op.isRegisterReference()) {
-									System.out.println("foo");
 								} else if (op.isStackReference()) {
 									StackReference sr = (StackReference)op;
 									
@@ -618,8 +618,33 @@ public class AmigaExporter implements CancelledListener {
 									write(prefix + reg);
 								} else if (type == (OperandType.REGISTER | OperandType.INDIRECT)) {
 									write(prefix + "(" + trimRegSuffix(inst.getRegister(i).toString()) + ")");
+								} else if (type == (OperandType.ADDRESS | OperandType.DYNAMIC)) {
+									// Sometimes used for movem reg list
+									if (mnemonic.startsWith("movem")) {
+										boolean toRegister = (bytes[0] & 0x4) != 0;
+										
+										if (toRegister && i == 1 ||
+											!toRegister && i == 0) {
+											// reg list
+											String code = codeUnit.toString();
+											Pattern pattern = Pattern.compile("\\{.*\\}");
+											Matcher matcher = pattern.matcher(code);
+											
+											if (matcher.find()) {
+												
+												write(prefix + code.substring(matcher.start() + 1, matcher.end() - 1).trim().replace(' ', '/'));
+												prefix = ",";
+												continue;												
+											}
+
+											throw new RuntimeException(String.format("Invalid movem command at address %08x.", address.getUnsignedOffset()));
+										}
+									}
+									
+									throw new RuntimeException(String.format("Unsupported operand type $%08x at address %08x.", type, address.getUnsignedOffset()));
+
 								} else {
-									System.out.println("foo");
+									throw new RuntimeException(String.format("Unsupported operand type $%08x at address %08x.", type, address.getUnsignedOffset()));
 								}
 							} else {
 								
