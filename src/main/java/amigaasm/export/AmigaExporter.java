@@ -98,7 +98,7 @@ public class AmigaExporter implements CancelledListener {
 		}
 		
 		if (lastBlockIndex != -1) {
-			writeLine(writer, "; }"); // end of section
+			writeLine(writer, ";   }"); // end of section
 		}
 		writer.flush();
 		writer.close();
@@ -133,10 +133,10 @@ public class AmigaExporter implements CancelledListener {
 			
 			if (hunkIndex != -1) {
 				if (hunkIndex != 0) {
-					writeLine(writer, "; }"); // end of section
+					writeLine(writer, ";   }"); // end of section
 				}
 				writeLine(writer, String.format("\tsection\thunk%02d,%s", hunkIndex, currentHunkType));
-				writeLine(writer, "; {"); // begin section
+				writeLine(writer, ";   {"); // begin section
 			}
 			
 			lastBlockIndex = blockIndex;
@@ -214,6 +214,17 @@ public class AmigaExporter implements CancelledListener {
 		writer.write(text + "\r\n");
 	}
 	
+	private static String getAddrRegisterName(int n) {
+		return n == 7 ? "SP" : String.format("A%d", n);
+	}
+	
+	private static String trimRegSuffix(String reg) {
+		if (reg.endsWith("w") || reg.endsWith("b")) {
+			return reg.substring(0, reg.length() - 1);
+		}
+		return reg;
+	}
+	
 	private boolean writeCode(OutputStreamWriter writer, Address address,
 			CodeUnit codeUnit, Memory memory, ProgramDataTypeManager typeManager,
 			int hunkIndex, TaskMonitor monitor) throws IOException {
@@ -245,17 +256,8 @@ public class AmigaExporter implements CancelledListener {
 				if (Arrays.binarySearch(Instructions.Names, mnemonic.toLowerCase()) != -1) {
 					writer.write("\t" + mnemonic);
 					
-					/*Symbol[] symbols = codeUnit.getSymbols();
-					
-					if (symbols != null) {
-
-						for (int i = 0; i < symbols.length; ++i) {
-
-							writer.write(" " + symbols[i].getName());
-						}
-					}*/
-					
 					int numOps = codeUnit.getNumOperands();
+					int byteOffset = 2;
 					String prefix = " ";
 					for (int i = 0; i < numOps; ++i) {
 						Reference[] opRefs = codeUnit.getOperandReferences(i);
@@ -264,12 +266,12 @@ public class AmigaExporter implements CancelledListener {
 								Reference op = opRefs[j];
 								if (op.isMemoryReference()) {
 									Address addr = op.getToAddress();		
-									String targetLabel = this.getLabelForAddress(address, null);
+									String targetLabel = this.getLabelForAddress(addr, null);
 									if (targetLabel != null) {
 										writer.write(prefix + targetLabel);
 									} else {
 										// TODO: maybe use address?
-										System.out.println(String.format("Missing label for target address %08x.", address.getUnsignedOffset()));
+										System.out.println(String.format("Missing label for target address %08x.", addr.getUnsignedOffset()));
 									}
 								} else if (op.isRegisterReference()) {
 									System.out.println("foo");
@@ -282,26 +284,62 @@ public class AmigaExporter implements CancelledListener {
 								Instruction inst = (Instruction)codeUnit;
 								int type = inst.getOperandType(i);
 								if (type == OperandType.DYNAMIC) { // (A0)+ etc
+									int mode = (bytes[1] >> 3) & 0x7;
+									int reg = bytes[1] & 0x7;
 									if (i == 1 && mnemonic.equals("move") || mnemonic.startsWith("move.")) {
 										// Note: move encodes the destination first but it is the second operand (i == 1)
-										// TODO
-									} else {
-										// move's source and all others encode the address mode the same way
-										// TODO: I guess there are some special commands which always use dynamic addressing
-										int mode = (bytes[1] >> 3) & 0x7;
-										int reg = bytes[1] & 0x7;
-																				
-										// TODO ...
-										// TODO: maybe use regex, some like (A0)+ can be used "as is"
-										// TODO: I guess only index and displacement should be converted (e.g. use label displacements etc)
+										short fullInstruction = readDisplacement(bytes, 0); // we abuse this method to get a full short of the instruction
+										mode = (fullInstruction >> 6) & 0x7;
+										reg = (fullInstruction >> 9) & 0x7;
 									}
-									// TODO: maybe we have to parse the mode from the opcode (is easy for all but move)
-									System.out.println("foo");
+									// TODO: I guess there are some special commands which always use dynamic addressing									
+									switch (mode) {
+										case 0: // Dn (should be not dynamic)
+										case 1: // An (should be not dynamic)
+											System.out.println("Unexpected address mode");
+											break;
+										case 2: // (An), should be already handled
+											writer.write(prefix + "(" + getAddrRegisterName(reg) + ")");
+											break;
+										case 3: // (An)+
+											writer.write(prefix + "(" + getAddrRegisterName(reg) + ")+");
+											break;
+										case 4: // -(An)
+											writer.write(prefix + "-(" + getAddrRegisterName(reg) + ")");
+											break;
+										case 5: // (d,An)
+											writer.write(prefix + String.format("($%04x,%s)", readDisplacement(bytes, byteOffset), getAddrRegisterName(reg)));
+											byteOffset += 2;
+											break;
+										case 6: // (d,An,Xn)
+											writer.write(prefix + getIndexExpression(getAddrRegisterName(reg), bytes, byteOffset));
+											byteOffset += 2;
+											break;
+										case 7: {
+											switch (reg) {
+												case 0: // absolute short
+												case 1: // absolute long
+												case 4: // immediate
+													// all of them should be handled elsewhere (scalar, reference)
+													System.out.println("Unexpected address mode");
+													break;
+												case 2: // (d,PC)
+													writer.write(prefix + String.format("($%04x,PC)", readDisplacement(bytes, byteOffset)));
+													byteOffset += 2;
+													break;
+												case 3: // (d,PC,Xn)
+													writer.write(prefix + getIndexExpression("PC", bytes, byteOffset));
+													byteOffset += 2;
+													break;
+											}
+										}
+									}
 								} else if (type == OperandType.SCALAR) {
 									writer.write(prefix + inst.getScalar(i).toString(16, true, true, "$", ""));
 								} else if (type == OperandType.REGISTER) {
-									// TODO: is SP already displayed this way or as A7? if so, adjust
-									writer.write(prefix + inst.getRegister(i).toString());
+									writer.write(prefix + trimRegSuffix(inst.getRegister(i).toString()));
+								} else if (type == (OperandType.REGISTER | OperandType.INDIRECT)) {
+									writer.write(prefix + "(" + trimRegSuffix(inst.getRegister(i).toString()) + ")");
 								} else {
 									System.out.println("foo");
 								}
@@ -545,6 +583,40 @@ public class AmigaExporter implements CancelledListener {
 		return result;
 	}
 	
+	private static short readDisplacement(byte[] bytes, int offset) {
+		
+		long result = toUnsignedByte(bytes[offset]);
+		result <<= 8;
+		result += toUnsignedByte(bytes[offset + 1]);
+		
+		if (result > Short.MAX_VALUE) {
+			result = -(result & Short.MAX_VALUE);
+		}
+		
+		return (short)result;
+	}
+	
+	private static String getIndexExpression(String baseRegister, byte[] bytes,
+		int extensionWordOffset) {
+		
+		byte displacement = bytes[extensionWordOffset + 1];
+		int flags = bytes[extensionWordOffset];
+		
+		String reg = (flags & 0x80) == 0 ? "D" : "A";
+			
+		reg += String.format("%d", (flags >> 4) & 0x7);
+		
+		if ((flags & 0x8) == 0) // TODO: is this necessary or even valid?
+			reg += "w";
+		
+		String d = String.format("$%02x", Math.abs(displacement));
+		
+		if (displacement < 0) {
+			d = "-" + d;
+		}
+		
+		return String.format("(%s,%s,%s)", d, baseRegister, reg);
+	}
 	
 	private String getLabelForAddress(Memory memory, byte[] addressData) {
 		
