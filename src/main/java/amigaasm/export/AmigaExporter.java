@@ -4,9 +4,11 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Dictionary;
 import java.util.Hashtable;
 import java.util.List;
@@ -21,15 +23,23 @@ import ghidra.program.database.data.ProgramDataTypeManager;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressIterator;
 import ghidra.program.model.address.AddressSpace;
+import ghidra.program.model.data.Array;
+import ghidra.program.model.data.ByteDataType;
 import ghidra.program.model.data.CharDataType;
+import ghidra.program.model.data.DWordDataType;
 import ghidra.program.model.data.DataType;
+import ghidra.program.model.data.DataTypeComponent;
 import ghidra.program.model.data.Pointer;
+import ghidra.program.model.data.SignedByteDataType;
+import ghidra.program.model.data.SignedDWordDataType;
+import ghidra.program.model.data.SignedWordDataType;
 import ghidra.program.model.data.Structure;
 import ghidra.program.model.data.TypeDef;
 import ghidra.program.model.data.Undefined1DataType;
 import ghidra.program.model.data.Undefined2DataType;
 import ghidra.program.model.data.Undefined4DataType;
 import ghidra.program.model.data.UnsignedIntegerDataType;
+import ghidra.program.model.data.WordDataType;
 import ghidra.program.model.lang.OperandType;
 import ghidra.program.model.listing.CodeUnit;
 import ghidra.program.model.listing.Data;
@@ -49,6 +59,7 @@ public class AmigaExporter implements CancelledListener {
 	private boolean exportComments = true;
 	
 	// State
+	private static final Charset charset = StandardCharsets.ISO_8859_1; // TODO: Amiga charset
 	private boolean exportCancelled = false;
 	private Listing listing = null;
 	private int lastBlockIndex = -1;
@@ -107,31 +118,52 @@ public class AmigaExporter implements CancelledListener {
 		return true;
 	}
 	
+	static final String headerBar = "#######################";
+	
+	private String getHeaderTitle(String text) {
+	
+		int textSpace = headerBar.length() - 3;
+		
+		if (text.length() == textSpace) {
+			return "# " + text + "#";
+		}
+		
+		if (text.length() > textSpace) {
+			return "# " + text;
+		}
+	
+		return "# " + text + String.join("", Collections.nCopies(textSpace - text.length(), " ")) + "#";
+	}
+	
 	private boolean processAddress(OutputStreamWriter writer, Listing listing,
 			Address address, Memory memory, ProgramDataTypeManager typeManager,
 			int blockIndex, String hunkName, long blockSize, TaskMonitor monitor) throws IOException {
 		
 		if (lastBlockIndex != blockIndex) {
 			int hunkIndex = -1;
-			writeLine(writer);
-			writeLine(writer, "; #################");
 			if (address.getUnsignedOffset() < 0x21f000) {
 				currentHunkType = hunkName; // should be "EXEC"
-				writeLine(writer, String.format("; # %s          #", hunkName));
+				if (currentHunkType.equals("EXEC")) {
+					System.out.println("Skipping EXEC section.");
+				} else {
+					System.out.println("Unrecognized section: " + currentHunkType);
+				}
 			} else {
 				Pattern hunkNamePattern = Pattern.compile("([A-Z]+)_([0-9]+)");
 				Matcher matcher = hunkNamePattern.matcher(hunkName);
+				writeLine(writer);
+				writeLine(writer, "; " + headerBar);
 				if (!matcher.matches()) {
-					writeLine(writer, String.format("; # %s          #", hunkName));
+					writeLine(writer, "; " + getHeaderTitle(hunkName));
 				} else {
 					currentHunkType = matcher.group(1);
 					boolean isBss = currentHunkType.equals("BSS");
 					hunkIndex = Integer.parseInt(matcher.group(2));
-					writeLine(writer, String.format("; # HUNK%s - %s #", matcher.group(2), isBss ? "BSS " : currentHunkType));
+					writeLine(writer, "; " + getHeaderTitle(String.format("HUNK%s - %s", matcher.group(2), isBss ? "BSS " : currentHunkType)));
 				}
-			}
-			writeLine(writer, "; #################");
-			
+				writeLine(writer, "; " + headerBar);
+			}			
+
 			if (hunkIndex != -1) {
 				if (hunkIndex != 0) {
 					writeLine(writer, ";   }"); // end of section
@@ -141,6 +173,10 @@ public class AmigaExporter implements CancelledListener {
 			}
 			
 			lastBlockIndex = blockIndex;
+		}
+		
+		if (!currentHunkType.equals("DATA") && !currentHunkType.equals("BSS") && !currentHunkType.equals("CODE")) {
+			return false;
 		}
 
 		CodeUnit codeUnit = listing.getCodeUnitAt(address);
@@ -231,10 +267,17 @@ public class AmigaExporter implements CancelledListener {
 			int hunkIndex, TaskMonitor monitor) throws IOException {
 		
 		long addressOffset = address.getUnsignedOffset();
+		
+		// TODO: REMOVE
+		if (addressOffset == 0x0022d31a) {
+			int x = 0;
+		}
+		
 		String label = codeUnit.getLabel();
 		
 		if (label != null) {
-			if (label.equals("FUN_0021f4e6")) {
+			// TODO: REMOVE
+			if (label.equals("LAB_0021f1bc")) {
 				int x = 0;
 			}
 			writeLine(writer, label + ":");
@@ -257,7 +300,14 @@ public class AmigaExporter implements CancelledListener {
 			
 			if (mnemonic != null) {
 				
-				if (Arrays.binarySearch(Instructions.Names, mnemonic.toLowerCase()) != -1) {
+				String opcode = mnemonic.toLowerCase();
+				int dotIndex = opcode.indexOf('.');
+				
+				if (dotIndex >= 0) {
+					opcode = opcode.substring(0, dotIndex);
+				}
+				
+				if (Arrays.binarySearch(Instructions.Names, opcode) >= 0) {
 					writer.write("\t" + mnemonic);
 					
 					int numOps = codeUnit.getNumOperands();
@@ -268,27 +318,98 @@ public class AmigaExporter implements CancelledListener {
 						if (opRefs != null && opRefs.length != 0) {
 							for (int j = 0; j < opRefs.length; ++j) {
 								Reference op = opRefs[j];
+								if (opRefs.length > 1 && !op.isPrimary()) {
+									continue;
+								}
 								if (op.isMemoryReference()) {
+									// Ghidra messes up PC related addresses
+									if (Arrays.binarySearch(Instructions.NamesWithPCAddressMode, opcode) >= 0) {
+										
+										if (i == 1 && (mnemonic.equals("move") || mnemonic.startsWith("move."))) {
+											
+											// Note: move encodes the destination first but it is the second operand (i == 1)
+											short fullInstruction = readDisplacement(bytes, 0); // we abuse this method to get a full short of the instruction
+											int mode = (fullInstruction >> 6) & 0x7;
+											
+											if (mode == 7) {
+												
+												mode = (fullInstruction >> 9) & 0x7;
+												
+												if ((mode & 0x2) != 0) {
+													
+													Address targetAddr = address.add(2); // skip the opcode bytes
+													
+													// PC relative reference
+													if (mode == 2) {
+														targetAddr = address.add(readDisplacement(bytes, byteOffset));
+														writer.write(prefix + "(" + this.getLabelForAddress(targetAddr, null) + ",PC)");
+													} else { // mode 3
+														targetAddr = address.add(readIndexDisplacement(bytes, byteOffset));
+														writer.write(prefix + "(" + this.getLabelForAddress(targetAddr, null) + String.format(",PC,D%d)", (bytes[byteOffset] >> 4) & 0x7));
+													}
+													
+													prefix = ",";
+													continue;	
+												}
+											}
+											
+										} else {
+											
+											int mode = (bytes[1] >> 3) & 0x7;
+											
+											if (mode == 7) {
+												
+												mode = bytes[1] & 0x7;
+												
+												if ((mode & 0x2) != 0) {
+													
+													Address targetAddr = address.add(2); // skip the opcode bytes
+													
+													// PC relative reference
+													if (mode == 2) {
+														targetAddr = address.add(readDisplacement(bytes, byteOffset));
+														writer.write(prefix + "(" + this.getLabelForAddress(targetAddr, null) + ",PC)");
+													} else { // mode 3
+														targetAddr = address.add(readIndexDisplacement(bytes, byteOffset));
+														writer.write(prefix + "(" + this.getLabelForAddress(targetAddr, null) + String.format(",PC,D%d)", (bytes[byteOffset] >> 4) & 0x7));
+													}
+													
+													prefix = ",";
+													continue;	
+												}
+											}
+										}
+										
+									}
+							
 									Address addr = op.getToAddress();		
 									String targetLabel = this.getLabelForAddress(addr, null);
 									if (targetLabel != null) {
 										writer.write(prefix + targetLabel);
 									} else {
 										// TODO: maybe use address?
-										System.out.println(String.format("Missing label for target address %08x.", addr.getUnsignedOffset()));
+										throw new RuntimeException(String.format("Missing label for target address %08x.", addr.getUnsignedOffset()));
 									}
-								} else if (op.isRegisterReference()) {
+									} else if (op.isRegisterReference()) {
 									System.out.println("foo");
 								} else if (op.isStackReference()) {
 									StackReference sr = (StackReference)op;
 									
-									if (sr.getStackOffset() < 0) {
-										writer.write(prefix + "-(SP)");
+									if (mnemonic.startsWith("movem")) {
+										if (i == 1) {
+											writer.write(prefix + "-(SP)");
+										} else {
+											writer.write(prefix + "(SP)+");
+										}
 									} else {
-										writer.write(prefix + "(SP)+");
+										if (sr.getStackOffset() < 0) {
+											writer.write(prefix + "-(SP)");
+										} else {
+											writer.write(prefix + "(SP)+");
+										}
 									}
 								} else {
-									System.out.println(String.format("Unsupported operand '%s' at address %08x.", op.getReferenceType().getName(), address.getUnsignedOffset()));
+									throw new RuntimeException(String.format("Unsupported operand '%s' at address %08x.", op.getReferenceType().getName(), address.getUnsignedOffset()));
 								}
 							}
 						} else {
@@ -309,70 +430,79 @@ public class AmigaExporter implements CancelledListener {
 											if (matcher.find()) {
 												
 												writer.write(prefix + code.substring(matcher.start() + 1, matcher.end() - 1).trim().replace(' ', '/'));
-												continue;
-												
-											} else {
-												// TODO: throw
+												prefix = ",";
+												continue;												
 											}
+
+											throw new RuntimeException(String.format("Invalid movem command at address %08x.", address.getUnsignedOffset()));
 										}
 									}
 									int mode = (bytes[1] >> 3) & 0x7;
 									int reg = bytes[1] & 0x7;
-									if (i == 1 && mnemonic.equals("move") || mnemonic.startsWith("move.")) {
+									if (i == 1 && (mnemonic.equals("move") || mnemonic.startsWith("move."))) {
 										// Note: move encodes the destination first but it is the second operand (i == 1)
 										short fullInstruction = readDisplacement(bytes, 0); // we abuse this method to get a full short of the instruction
 										mode = (fullInstruction >> 6) & 0x7;
 										reg = (fullInstruction >> 9) & 0x7;
 									}
-									// TODO: I guess there are some special commands which always use dynamic addressing									
-									switch (mode) {
-										case 0: // Dn (should be not dynamic)
-										case 1: // An (should be not dynamic)
-											System.out.println("Unexpected address mode");
-											break;
-										case 2: // (An), should be already handled
-											writer.write(prefix + "(" + getAddrRegisterName(reg) + ")");
-											break;
-										case 3: // (An)+
-											writer.write(prefix + "(" + getAddrRegisterName(reg) + ")+");
-											break;
-										case 4: // -(An)
-											writer.write(prefix + "-(" + getAddrRegisterName(reg) + ")");
-											break;
-										case 5: // (d,An)
-											writer.write(prefix + String.format("($%04x,%s)", readDisplacement(bytes, byteOffset), getAddrRegisterName(reg)));
-											byteOffset += 2;
-											break;
-										case 6: // (d,An,Xn)
-											writer.write(prefix + getIndexExpression(getAddrRegisterName(reg), bytes, byteOffset));
-											byteOffset += 2;
-											break;
-										case 7: {
-											switch (reg) {
-												case 0: // absolute short
-												case 1: // absolute long
-												case 4: // immediate
-													// all of them should be handled elsewhere (scalar, reference)
-													System.out.println("Unexpected address mode");
-													break;
-												case 2: // (d,PC)
-													writer.write(prefix + String.format("($%04x,PC)", readDisplacement(bytes, byteOffset)));
-													byteOffset += 2;
-													break;
-												case 3: // (d,PC,Xn)
-													writer.write(prefix + getIndexExpression("PC", bytes, byteOffset));
-													byteOffset += 2;
-													break;
+									// Some instructions need some special treatment
+									if (mode >= 4 && (mnemonic.startsWith("as") ||
+										mnemonic.startsWith("ls") || mnemonic.startsWith("ro"))) {
+										// Shifts and rolls with mode > 4 are Dn
+										reg = (bytes[0] >> 1) & 0x7;
+										writer.write(prefix + "D" + Integer.toString(reg));
+									} else {
+										// TODO: I guess there are more special commands which always use dynamic addressing									
+										switch (mode) {
+											case 0: // Dn (should be not dynamic)
+											case 1: // An (should be not dynamic)
+												System.out.println("Unexpected address mode");
+												break;
+											case 2: // (An), should be already handled
+												writer.write(prefix + "(" + getAddrRegisterName(reg) + ")");
+												break;
+											case 3: // (An)+
+												writer.write(prefix + "(" + getAddrRegisterName(reg) + ")+");
+												break;
+											case 4: // -(An)
+												writer.write(prefix + "-(" + getAddrRegisterName(reg) + ")");
+												break;
+											case 5: // (d,An)
+												writer.write(prefix + String.format("($%04x,%s)", readDisplacement(bytes, byteOffset), getAddrRegisterName(reg)));
+												byteOffset += 2;
+												break;
+											case 6: // (d,An,Xn)
+												writer.write(prefix + getIndexExpression(getAddrRegisterName(reg), bytes, byteOffset));
+												byteOffset += 2;
+												break;
+											case 7: {
+												switch (reg) {
+													case 0: // absolute short
+													case 1: // absolute long
+													case 4: // immediate
+														// all of them should be handled elsewhere (scalar, reference)
+														System.out.println("Unexpected address mode");
+														break;
+													case 2: // (d,PC)
+														writer.write(prefix + String.format("($%04x,PC)", readDisplacement(bytes, byteOffset)));
+														byteOffset += 2;
+														break;
+													case 3: // (d,PC,Xn)
+														writer.write(prefix + getIndexExpression("PC", bytes, byteOffset));
+														byteOffset += 2;
+														break;
+												}
 											}
 										}
 									}
 								} else if (type == OperandType.SCALAR) {
-									writer.write(prefix + inst.getScalar(i).toString(16, true, true, "$", ""));
+									writer.write(prefix + inst.getScalar(i).toString(16, true, true, "#$", ""));
 								} else if (type == OperandType.REGISTER) {
 									String reg = trimRegSuffix(inst.getRegister(i).toString());
-									if (reg.equals("SP")) {
-										// -(SP) is stored as SP for some reason
-										// but it is never used directly as SP
+									if (reg.equals("SP") && mnemonic.startsWith("movem")) {
+										// -(SP) is stored as SP for movem for some reason
+										// but it is never used directly as SP so
+										// we can safely replace it with -(SP) here.
 										reg = "-(SP)";
 									}
 									writer.write(prefix + reg);
@@ -382,6 +512,8 @@ public class AmigaExporter implements CancelledListener {
 									System.out.println("foo");
 								}
 							} else {
+								
+								throw new RuntimeException(String.format("Couldn't read operands at address %08x.", address.getUnsignedOffset()));
 								// TODO: error
 							}
 						}
@@ -393,34 +525,22 @@ public class AmigaExporter implements CancelledListener {
 			}
 		}
 		
-		if (currentHunkType.equals("DATA") || currentHunkType.equals("BSS") || currentHunkType.equals("CODE")) {
-
-			String mnemonic = codeUnit.getMnemonicString();
-				
-			byte[] bytes = null;
-			try {
-				bytes = codeUnit.getBytes();
-			} catch (MemoryAccessException e) {
-				// Unable to read
-			}
+		String mnemonic = codeUnit.getMnemonicString();
 			
-			writeData(writer, mnemonic, bytes, typeManager, monitor, address, hunkIndex, memory);
-			
-			return true;
-			
+		byte[] bytes = null;
+		try {
+			bytes = codeUnit.getBytes();
+		} catch (MemoryAccessException e) {
+			// Unable to read
 		}
-
-		if (currentHunkType.equals("EXEC")) {
-			// TODO
-		} else {
-			System.out.println("Unrecognized hunk type: " + currentHunkType);
-		}
-
-		return false;
+		
+		writeData(writer, mnemonic, bytes, 0, typeManager, monitor, address, hunkIndex, memory);
+		
+		return true;
 	}
 	
 	private void writeArray(OutputStreamWriter writer, String arrayIndexPattern, String typeName,
-			ProgramDataTypeManager typeManager, byte[] data, TaskMonitor monitor,
+			ProgramDataTypeManager typeManager, byte[] data, int dataOffset, TaskMonitor monitor,
 			Address address, int hunkIndex, Memory memory) throws IOException {
 		
 		Pattern pattern = Pattern.compile("(\\[[0-9]+\\])+");
@@ -439,11 +559,12 @@ public class AmigaExporter implements CancelledListener {
 			int dim = Integer.parseInt(value.substring(1, value.length() - 1));
 			totalAmount = totalAmount == 0 ? dim : totalAmount * dim;
 		}
-
+		
 		for (int n = 0; n < totalAmount; ++n) {
 			
-			writeData(writer, typeName, data, typeManager, monitor, address, hunkIndex, memory);
-			address.add(data.length);
+			int size = writeData(writer, typeName, data, dataOffset, typeManager, monitor, address, hunkIndex, memory);
+			dataOffset += size;
+			address = address.add(size);
 			
 			if (n != totalAmount - 1) {
 				writeLine(writer);
@@ -459,59 +580,79 @@ public class AmigaExporter implements CancelledListener {
 		return types.isEmpty() ? null : types.get(0);
 	}
 	
-	private void writeData(OutputStreamWriter writer, String mnemonic, byte[] data,
-			ProgramDataTypeManager typeManager, TaskMonitor monitor,
+	private int writeData(OutputStreamWriter writer, String mnemonic, byte[] data,
+			int dataOffset, ProgramDataTypeManager typeManager, TaskMonitor monitor,
 			Address address, int hunkIndex, Memory memory) throws IOException {
 		
 		if (mnemonic.equals("ds")) {
-			writer.write("\tdc.b \"" + getStringFromData(data) + "\",0");
+			writer.write("\tdc.b \"" + getStringFromData(data, dataOffset) + "\",0");
+			return data.length - dataOffset;
 		} else if (mnemonic.equals("db")) {
-			writer.write(String.format("\tdc.b $%02x", data[0]));
+			writer.write(String.format("\tdc.b $%02x", data[dataOffset]));
+			return 1;
 		} else if (mnemonic.equals("dw")) {
-			writer.write(String.format("\tdc.w $%02x%02x", data[0], data[1]));
+			writer.write(String.format("\tdc.w $%02x%02x", data[dataOffset], data[dataOffset + 1]));
+			return 2;
 		} else if (mnemonic.equals("ddw") || mnemonic.equals("dl")) {
-			writer.write(String.format("\tdc.l $%02x%02x%02x%02x", data[0], data[1], data[2], data[3]));
+			writer.write(String.format("\tdc.l $%02x%02x%02x%02x", data[dataOffset], data[dataOffset + 1],
+				data[dataOffset + 2], data[dataOffset + 3]));
+			return 4;
 		} else if (mnemonic.equals("addr")) {
-			writer.write("\tdc.l " + this.getLabelForAddress(memory, data));
-			return;
+			writer.write("\tdc.l " + this.getLabelForAddress(memory, data, dataOffset));
+			return 4;
 		} else if (mnemonic.equals("char")) {
-			writer.write("\tdc.b " + (data[0] < 0x20 ? String.format("%x", data[0]) : "'" + (char)data[0] + "'"));
-			return;
+			writer.write("\tdc.b " + (data[dataOffset] < 0x20 ? String.format("%x", data[dataOffset]) : "'" + (char)data[dataOffset] + "'"));
+			return 1;
 		} else {
 			// Expect mnemonic to be the typename
 			if (mnemonic.endsWith("]")) { // array
 				
-				int arrIndex = mnemonic.indexOf('[');
-				String typeName = mnemonic.substring(0, arrIndex);
+				DataType arrType = findFirstDataType(typeManager, mnemonic);
 				
-				DataType dataType = findFirstDataType(typeManager, typeName);
-				
-				if (dataType == null) {
+				if (arrType != null) {
 					
-					if (typeName.equals("ds") || typeName.equals("db") ||
-						typeName.equals("dw") || typeName.equals("ddw") ||
-						typeName.equals("dl") || typeName.equals("addr") ||
-						typeName.equals("char")) {						
-						writeLine(writer, "\t; " + mnemonic);
-					} else {					
-						monitor.setMessage(String.format("Unrecognized data type or mnemonic found in hunk %d at address %08x: %s", hunkIndex, address.getUnsignedOffset(), mnemonic));
-						monitor.cancel();
-						return;
+					writeLine(writer, "\t; " + mnemonic);
+					Array arr = (Array)arrType;
+					
+					writeArray(writer, arr.getNumElements(), arr.getDataType(), typeManager, data, dataOffset, monitor, address, hunkIndex);
+					return data.length;
+					
+				} else {
+
+					int arrIndex = mnemonic.indexOf('[');
+					String typeName = mnemonic.substring(0, arrIndex);
+					
+					DataType dataType = findFirstDataType(typeManager, typeName);
+					
+					if (dataType == null) {
+						
+						if (typeName.equals("ds") || typeName.equals("db") ||
+							typeName.equals("dw") || typeName.equals("ddw") ||
+							typeName.equals("dl") || typeName.equals("addr") ||
+							typeName.equals("char")) {						
+							writeLine(writer, "\t; " + mnemonic);
+						} else {					
+							monitor.setMessage(String.format("Unrecognized data type or mnemonic found in hunk %d at address %08x: %s", hunkIndex, address.getUnsignedOffset(), mnemonic));
+							monitor.cancel();
+							return 0;
+						}
 					}
+					else {
+						writeLine(writer, "\t; " + toCTypeName(writer, dataType, typeName) + mnemonic.substring(arrIndex));
+					}
+					
+					writeArray(writer, mnemonic.substring(arrIndex), typeName, typeManager, data,
+						dataOffset, monitor, address, hunkIndex, memory);
+					
+					return data.length;
 				}
-				else {
-					writeLine(writer, "\t; " + toCTypeName(writer, dataType, typeName) + mnemonic.substring(arrIndex));
-				}
-				
-				writeArray(writer, mnemonic.substring(arrIndex), typeName, typeManager, data,
-					monitor, address, hunkIndex, memory);
 				
 			} else {
 
 				if (mnemonic.equals("??")) {
 					monitor.setMessage(String.format("Unresolved data in hunk %d at address %08x", hunkIndex, address.getUnsignedOffset()));
 					monitor.cancel();
-					return;
+					return 0;
 				}
 				
 				DataType dataType = findFirstDataType(typeManager, mnemonic);
@@ -519,46 +660,57 @@ public class AmigaExporter implements CancelledListener {
 				if (dataType == null) {
 					monitor.setMessage(String.format("Unrecognized data type or mnemonic found in hunk %d at address %08x: %s", hunkIndex, address.getUnsignedOffset(), mnemonic));
 					monitor.cancel();
-					return;
+					return 0;
 				}
 				
 				writeLine(writer, "\t; " + toCTypeName(writer, dataType, mnemonic));
 				
 				if (dataType instanceof Structure) {
-					writeStruct(writer, (Structure)dataType, data, typeManager, monitor,
-							address, hunkIndex);
-					return;					
-				} else if (dataType instanceof ghidra.program.model.data.Enum) {
-					writeEnum(writer, (ghidra.program.model.data.Enum)dataType, data, typeManager, monitor,
+					Structure s = (Structure)dataType;
+					writeStruct(writer, s, data, dataOffset, typeManager, monitor,
 						address, hunkIndex);
-					return;					
+					return s.getLength();					
+				} else if (dataType instanceof ghidra.program.model.data.Enum) {
+					ghidra.program.model.data.Enum e = (ghidra.program.model.data.Enum)dataType;
+					writeEnum(writer, e, data, dataOffset, e.getLength(),
+						typeManager, monitor, address, hunkIndex);
+					return e.getLength();					
 				} else if (dataType instanceof Pointer) {
-					writer.write("dc.l " + getLabelForAddress(memory, data));
-					return;				
+					writer.write("dc.l " + getLabelForAddress(memory, data, dataOffset));
+					return 4;				
 				} else if (dataType instanceof TypeDef) {
 					TypeDef td = (TypeDef)dataType;
 					DataType baseType = td.getBaseDataType();
-					writeData(writer, baseType.getDisplayName(), data, typeManager, monitor,
+					writeData(writer, baseType.getDisplayName(), data, dataOffset, typeManager, monitor,
 						address, hunkIndex, memory);
-					return;
+					return baseType.getLength();
 				} else if (dataType instanceof Undefined1DataType) {
-					writeData(writer, "db", data, typeManager, monitor,
+					writeData(writer, "db", data, dataOffset, typeManager, monitor,
 						address, hunkIndex, memory);
+					return 1;
 				} else if (dataType instanceof Undefined2DataType) {
-					writeData(writer, "dw", data, typeManager, monitor,
+					writeData(writer, "dw", data, dataOffset, typeManager, monitor,
 						address, hunkIndex, memory);
+					return 2;
 				} else if (dataType instanceof Undefined4DataType) {
-					writeData(writer, "dl", data, typeManager, monitor,
+					writeData(writer, "dl", data, dataOffset, typeManager, monitor,
 						address, hunkIndex, memory);
+					return 4;
 				} else if (dataType instanceof UnsignedIntegerDataType) {
-					writeData(writer, "dl", data, typeManager, monitor,
+					writeData(writer, "dl", data, dataOffset, typeManager, monitor,
 						address, hunkIndex, memory);
+					return 4;
 				} else if (dataType instanceof CharDataType) {
-					writeData(writer, "char", data, typeManager, monitor,
+					writeData(writer, "char", data, dataOffset, typeManager, monitor,
 						address, hunkIndex, memory);
+					return 1;
 				}
 			}
-		}
+		}		
+		
+		// TODO: throw
+		
+		return 0;
 	}
 	
 	private String getLabelForAddress(Address address, Long fallback) {
@@ -582,6 +734,34 @@ public class AmigaExporter implements CancelledListener {
 				}
 			}
 			
+			for (int i = 0; i < 4; ++i) {
+			
+				address = address.add(1);				
+				codeUnit = listing.getCodeUnitAt(address);
+				
+				if (codeUnit == null) {
+					
+					data = listing.getDataAt(address);
+					
+					if (data != null) {
+
+						String label = data.getLabel();
+						
+						if (label != null) {
+							return label + String.format("-%d", i + 1);
+						}
+					}
+				} else {
+				
+					String label = codeUnit.getLabel();
+					
+					if (label != null) {
+						return label + String.format("-%d", 2 + i + 1);
+					}
+				}
+			}
+			
+			
 			// TODO: throw, maybe external target like Amiga system calls?
 			
 			return String.format("$%08x", fallback);
@@ -597,6 +777,31 @@ public class AmigaExporter implements CancelledListener {
 		return String.format("$%08x", fallback);
 	}
 	
+	private String getLabelForAddress(Address address, byte[] addressData, int dataOffset) {
+		
+		long offset = bytesToBigEndianLong(addressData, dataOffset);
+		long current = address.getOffset();
+		long add = offset - current;
+		address = address.add(add);
+
+		return getLabelForAddress(address, offset);
+	}
+	
+	private String getLabelForAddress(Memory memory, byte[] addressData, int dataOffset) {
+		
+		long offset = bytesToBigEndianLong(addressData, dataOffset);
+		
+		if (offset == 0) {
+			return "0";
+		} else if (offset == -1) {
+			return "-1";
+		}
+		
+		Address address = memory.getProgram().getAddressMap().getImageBase().add(offset);
+
+		return getLabelForAddress(address, offset);
+	}
+	
 	private static long toUnsignedByte(byte b) {
 		
 		long result = b;
@@ -604,15 +809,15 @@ public class AmigaExporter implements CancelledListener {
 		return result < 0 ? result + 256 : result;		
 	}
 	
-	private static long bytesToBigEndianLong(byte[] bytes) {
+	private static long bytesToBigEndianLong(byte[] bytes, int offset) {
 		
-		long result = toUnsignedByte(bytes[0]);
+		long result = toUnsignedByte(bytes[offset]);
 		result <<= 8;
-		result += toUnsignedByte(bytes[1]);
+		result += toUnsignedByte(bytes[offset + 1]);
 		result <<= 8;
-		result += toUnsignedByte(bytes[2]);
+		result += toUnsignedByte(bytes[offset + 2]);
 		result <<= 8;
-		result += toUnsignedByte(bytes[3]);
+		result += toUnsignedByte(bytes[offset + 3]);
 		
 		if (result > Integer.MAX_VALUE) {
 			result = -(result & Integer.MAX_VALUE);
@@ -634,6 +839,10 @@ public class AmigaExporter implements CancelledListener {
 		return (short)result;
 	}
 	
+	private static short readIndexDisplacement(byte[] bytes, int offset) {
+		return bytes[offset + 1];
+	}
+	
 	private static String getIndexExpression(String baseRegister, byte[] bytes,
 		int extensionWordOffset) {
 		
@@ -644,9 +853,6 @@ public class AmigaExporter implements CancelledListener {
 			
 		reg += String.format("%d", (flags >> 4) & 0x7);
 		
-		if ((flags & 0x8) == 0) // TODO: is this necessary or even valid?
-			reg += "w";
-		
 		String d = String.format("$%02x", Math.abs(displacement));
 		
 		if (displacement < 0) {
@@ -656,24 +862,142 @@ public class AmigaExporter implements CancelledListener {
 		return String.format("(%s,%s,%s)", d, baseRegister, reg);
 	}
 	
-	private String getLabelForAddress(Memory memory, byte[] addressData) {
-		
-		long offset = bytesToBigEndianLong(addressData);
-		Address address = memory.getProgram().getAddressMap().getImageBase().add(offset);
-
-		return getLabelForAddress(address, offset);
-	}
-	
 	private void writeStruct(OutputStreamWriter writer, Structure dataType, byte[] data,
-			ProgramDataTypeManager typeManager, TaskMonitor monitor,
+			int dataOffset, ProgramDataTypeManager typeManager, TaskMonitor monitor,
 			Address address, int hunkIndex) throws IOException {
 
+		String name = dataType.getName();
+		int offset = 0;
+		
+		while (true) {
+			
+			DataTypeComponent component = dataType.getDefinedComponentAtOrAfterOffset(offset);
+			
+			if (component == null) {
+				break;
+			}
+			
+			if (offset != 0) {
+				writeLine(writer);
+			}
+			
+			DataType componentDataType = component.getDataType();
+			
+			writeStructComponent(writer, componentDataType, data, dataOffset + offset, typeManager, monitor, address, hunkIndex);
+			
+			int length = component.getLength();
+			offset += length;
+			address = address.add(length);
+			
+			String comment = component.getComment();
+			
+			if (comment == null) {
+				comment = component.getFieldName();
+				
+				if (comment != null) {
+					comment = name + "." + comment;
+				}
+			}
+			
+			if (comment != null) {
+				writer.write(" ; " + comment);
+			}
+		}
+	}
+	
+	private void writeArray(OutputStreamWriter writer, int dimension, DataType elementType,
+			ProgramDataTypeManager typeManager, byte[] data, int dataOffset, TaskMonitor monitor,
+			Address address, int hunkIndex) throws IOException {
+		
+		for (int i = 0; i < dimension; ++i) {
+			writeStructComponent(writer, elementType, data, dataOffset, typeManager, monitor, address, hunkIndex);
+			int size = elementType.getLength();
+			dataOffset += size;
+			address = address.add(size);
+			
+			if (i != dimension - 1) {
+				writeLine(writer);
+			}
+		}
+	}
+	
+	private void writeStructComponent(OutputStreamWriter writer, DataType dataType,
+			byte[] data, int dataOffset, ProgramDataTypeManager typeManager, TaskMonitor monitor,
+			Address address, int hunkIndex) throws IOException {
+
+		if (dataType instanceof Structure) {
+			writeStruct(writer, (Structure)dataType, data, dataOffset, typeManager, monitor,
+				address, hunkIndex);
+			return;					
+		} else if (dataType instanceof ghidra.program.model.data.Enum) {
+			writeEnum(writer, (ghidra.program.model.data.Enum)dataType, data, dataOffset, dataType.getLength(),
+				typeManager, monitor, address, hunkIndex);
+			return;					
+		} else if (dataType instanceof Array) {
+			Array arr = (Array)dataType;
+			DataType elementType = arr.getDataType();
+			writeArray(writer, arr.getNumElements(), elementType, typeManager, data, dataOffset, monitor, address, hunkIndex);
+			return;					
+		} else if (dataType instanceof Pointer) {
+			writer.write("\tdc.l " + getLabelForAddress(address, data, dataOffset));
+			return;				
+		} else if (dataType instanceof TypeDef) {
+			TypeDef td = (TypeDef)dataType;
+			DataType baseType = td.getBaseDataType();
+			writeStructComponent(writer, baseType, data, dataOffset, typeManager, monitor, address, hunkIndex);
+			return;
+		} else if (dataType instanceof Undefined1DataType ||
+				   dataType instanceof ByteDataType) {
+			writer.write(String.format("\tdc.b $%02x", data[dataOffset]));
+		} else if (dataType instanceof SignedByteDataType) {
+			writer.write(String.format("\tdc.b %d", data[dataOffset]));
+		} else if (dataType instanceof Undefined2DataType ||
+				   dataType instanceof WordDataType) {
+			writer.write(String.format("\tdc.w $%04x", readDisplacement(data, dataOffset)));
+		} else if (dataType instanceof SignedWordDataType) {
+			writer.write(String.format("\tdc.w %d", readDisplacement(data, dataOffset)));
+		} else if (dataType instanceof Undefined4DataType ||
+				   dataType instanceof DWordDataType ||
+				   dataType instanceof UnsignedIntegerDataType) {
+			writer.write(String.format("\tdc.l $%04x", bytesToBigEndianLong(data, dataOffset)));
+		} else if (dataType instanceof SignedDWordDataType) {
+			writer.write(String.format("\tdc.l %d", bytesToBigEndianLong(data, dataOffset)));
+		} else if (dataType instanceof CharDataType) {
+			byte ch = data[dataOffset];
+			if (ch < 0x20) {
+				writer.write(String.format("\tdc.b %d", ch));
+			} else {
+				writer.write(String.format("\tdc.b '%s'", new String(data, dataOffset, 1, charset)));
+			}
+		} else {
+			throw new RuntimeException(String.format("Unrecognize data type '%s' at address %08x.", dataType.getClass().getName(), address.getUnsignedOffset()));
+		}
 	}
 	
 	private void writeEnum(OutputStreamWriter writer, ghidra.program.model.data.Enum dataType, byte[] data,
-			ProgramDataTypeManager typeManager, TaskMonitor monitor,
+			int dataOffset, int size, ProgramDataTypeManager typeManager, TaskMonitor monitor,
 			Address address, int hunkIndex) throws IOException {
 
+		long value = 0;
+		
+		if (size == 1) {
+			value = data[dataOffset];
+			writer.write(String.format("\tdc.b %02x", value));
+		} else if (size == 2) {
+			value = readDisplacement(data, dataOffset);
+			writer.write(String.format("\tdc.w %04x", value));
+		} else if (size == 4) {
+			value = bytesToBigEndianLong(data, dataOffset);
+			writer.write(String.format("\tdc.l %08x", value));
+		} else {
+			throw new RuntimeException(String.format("Invalid enum value size %d at address %08x.", size, address.getUnsignedOffset()));
+		}
+		
+		String name = dataType.getName(value);
+		
+		if (name != null) {
+			writer.write(" ; " + name);
+		}
 	}
 	
 	private static String toCTypeName(OutputStreamWriter writer, DataType dataType,
@@ -707,9 +1031,8 @@ public class AmigaExporter implements CancelledListener {
 		throw new RuntimeException("Invalid data type of Java type " + dataType.getClass().getName());
 	}
 	
-	private static String getStringFromData(byte[] data) {
+	private static String getStringFromData(byte[] data, int offset) {
 		
-		// TODO: Amiga charset
-		return new String(data, 0, data.length - 1, StandardCharsets.ISO_8859_1);
+		return new String(data, offset, data.length - offset - 1, charset);
 	}
 }
