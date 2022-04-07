@@ -343,6 +343,18 @@ public class AmigaExporter implements CancelledListener {
 		return reg;
 	}
 	
+	private String getDisplacement(Address callAddress, int displacement, int numBytes) {
+		
+		if (numBytes < 1 || numBytes > 2) {
+			throw new RuntimeException("Only displacements of size 1 or 2 are allowed.");
+		}
+		
+		Address targetAddress = callAddress.add(2 + displacement); // 2 because it starts after the instruction word
+		String label = getLabelForAddress(targetAddress, null);
+		
+		return label;
+	}
+	
 	private boolean writeCode(Address address, CodeUnit codeUnit, Memory memory,
 			ProgramDataTypeManager typeManager,	int hunkIndex, TaskMonitor monitor) {
 		
@@ -460,7 +472,7 @@ public class AmigaExporter implements CancelledListener {
 										if (i == 1 && (mnemonic.equals("move") || mnemonic.startsWith("move."))) {
 											
 											// Note: move encodes the destination first but it is the second operand (i == 1)
-											short fullInstruction = readDisplacement(bytes, 0); // we abuse this method to get a full short of the instruction
+											short fullInstruction = readShort(bytes, 0); // get a full short of the instruction
 											int mode = (fullInstruction >> 6) & 0x7;
 											
 											if (mode == 7) {
@@ -468,16 +480,14 @@ public class AmigaExporter implements CancelledListener {
 												mode = (fullInstruction >> 9) & 0x7;
 												
 												if ((mode & 0x2) != 0) {
-													
-													Address targetAddr = address.add(2); // skip the opcode bytes
-													
+																										
 													// PC relative reference
 													if (mode == 2) {
-														targetAddr = address.add(readDisplacement(bytes, byteOffset));
-														write(prefix + "(" + this.getLabelForAddress(targetAddr, null) + ",PC)");
+														int displacement = readShort(bytes, byteOffset);
+														String d = getDisplacement(address, displacement, 2);
+														write(prefix + String.format("(%s,PC)", d));
 													} else { // mode 3
-														targetAddr = address.add(readIndexDisplacement(bytes, byteOffset));
-														write(prefix + "(" + this.getLabelForAddress(targetAddr, null) + String.format(",PC,D%d)", (bytes[byteOffset] >> 4) & 0x7));
+														write(prefix + getIndexExpression(address, "PC", bytes, byteOffset));
 													}
 													
 													prefix = ",";
@@ -495,15 +505,13 @@ public class AmigaExporter implements CancelledListener {
 												
 												if ((mode & 0x2) != 0) {
 													
-													Address targetAddr = address.add(2); // skip the opcode bytes
-													
 													// PC relative reference
 													if (mode == 2) {
-														targetAddr = address.add(readDisplacement(bytes, byteOffset));
-														write(prefix + "(" + this.getLabelForAddress(targetAddr, null) + ",PC)");
+														int displacement = readShort(bytes, byteOffset);
+														String d = getDisplacement(address, displacement, 2);
+														write(prefix + String.format("(%s,PC)", d));
 													} else { // mode 3
-														targetAddr = address.add(readIndexDisplacement(bytes, byteOffset));
-														write(prefix + "(" + getLabelForAddress(targetAddr, null) + String.format(",PC,D%d)", (bytes[byteOffset] >> 4) & 0x7));
+														write(prefix + getIndexExpression(address, "PC", bytes, byteOffset));
 													}
 													
 													prefix = ",";
@@ -567,7 +575,7 @@ public class AmigaExporter implements CancelledListener {
 									int reg = bytes[1] & 0x7;
 									if (i == 1 && (mnemonic.equals("move") || mnemonic.startsWith("move."))) {
 										// Note: move encodes the destination first but it is the second operand (i == 1)
-										short fullInstruction = readDisplacement(bytes, 0); // we abuse this method to get a full short of the instruction
+										short fullInstruction = readShort(bytes, 0); // get a full short of the instruction
 										mode = (fullInstruction >> 6) & 0x7;
 										reg = (fullInstruction >> 9) & 0x7;
 									}
@@ -594,17 +602,15 @@ public class AmigaExporter implements CancelledListener {
 												break;
 											case 5: // (d,An)
 											{
-												int displacement = readDisplacement(bytes, byteOffset);
-												String d = toHex(Math.abs(displacement), 2);
-												if (displacement < 0) {
-													d = "-" + d;
-												}
+												int displacement = readShort(bytes, byteOffset);												
+												String d = getDisplacement(address, displacement, 2);
+												
 												write(prefix + String.format("(%s,%s)", d, getAddrRegisterName(reg)));
 												byteOffset += 2;
 												break;
 											}
 											case 6: // (d,An,Xn)
-												write(prefix + getIndexExpression(getAddrRegisterName(reg), bytes, byteOffset));
+												write(prefix + getIndexExpression(address, getAddrRegisterName(reg), bytes, byteOffset));
 												byteOffset += 2;
 												break;
 											case 7: {
@@ -616,17 +622,14 @@ public class AmigaExporter implements CancelledListener {
 														throw new RuntimeException("Unexpected address mode");
 													case 2: // (d,PC)
 													{
-														int displacement = readDisplacement(bytes, byteOffset);
-														String d = toHex(Math.abs(displacement), 2);
-														if (displacement < 0) {
-															d = "-" + d;
-														}
+														int displacement = readShort(bytes, byteOffset);
+														String d = getDisplacement(address, displacement, 2);
 														write(prefix + String.format("(%s,PC)", d));
 														byteOffset += 2;
 														break;
 													}
 													case 3: // (d,PC,Xn)
-														write(prefix + getIndexExpression("PC", bytes, byteOffset));
+														write(prefix + getIndexExpression(address, "PC", bytes, byteOffset));
 														byteOffset += 2;
 														break;
 												}
@@ -1025,7 +1028,7 @@ public class AmigaExporter implements CancelledListener {
 		}
 			
 		// If no label was found, add one
-		customLabel = String.format("LAB_" + toHex(fallback, 4));
+		customLabel = String.format("LAB_" + toHex(fallback, 4, false));
 		customLabelsByAddress.put(address, customLabel);
 		
 		Integer lineNumberOfAddress = lineNumbersByAddress.get(address);
@@ -1039,25 +1042,36 @@ public class AmigaExporter implements CancelledListener {
 	
 	private static String toHex(long value, int sizeInBytes) {
 		
+		return toHex(value, sizeInBytes, true);
+	}
+	
+	private static String toHex(long value, int sizeInBytes, boolean withPrefix) {
+		
 		String result;
 		
 		switch (sizeInBytes) {
 			case 1:
-				result = String.format("$%02x", value & 0xff);
+				result = String.format("%02x", value & 0xff);
 				break;
 			case 2:
-				result = String.format("$%04x", value & 0xffff);
+				result = String.format("%04x", value & 0xffff);
 				break;
 			case 4:
-				result = String.format("$%08x", value & 0xffffffff);
+				result = String.format("%08x", value & 0xffffffff);
 				break;
 			default:
 				throw new RuntimeException("Invalid sizeInBytes value for toHex function.");
 		}
 		
-		int length = 1 + sizeInBytes * 2;
+		int length = sizeInBytes * 2;
 		
-		return result.substring(result.length() - length);
+		result = result.substring(result.length() - length);
+		
+		if (withPrefix) {
+			return "$" + result;
+		}
+		
+		return result;
 	}
 	
 	private static String toHex(byte[] data, int dataOffset, int length) {
@@ -1066,10 +1080,10 @@ public class AmigaExporter implements CancelledListener {
 		
 		for (int i = 0; i < length; ++i) {
 			
-			result += toHex(data[dataOffset + i], 1);
+			result += toHex(data[dataOffset + i], 1, false);
 		}
 		
-		return result;
+		return "$" + result;
 	}
 	
 	private String getLabelForAddress(Address address, byte[] addressData, int dataOffset) {
@@ -1138,7 +1152,7 @@ public class AmigaExporter implements CancelledListener {
 		return result;
 	}
 	
-	private static short readDisplacement(byte[] bytes, int offset) {
+	private static short readShort(byte[] bytes, int offset) {
 		
 		long result = toUnsignedByte(bytes[offset]);
 		result <<= 8;
@@ -1157,21 +1171,16 @@ public class AmigaExporter implements CancelledListener {
 		return bytes[offset + 1];
 	}
 	
-	private static String getIndexExpression(String baseRegister, byte[] bytes,
+	private String getIndexExpression(Address address, String baseRegister, byte[] bytes,
 		int extensionWordOffset) {
 		
-		byte displacement = bytes[extensionWordOffset + 1];
+		int displacement = bytes[extensionWordOffset + 1];
+		String d = getDisplacement(address, displacement, 1);
 		int flags = bytes[extensionWordOffset];
 		
 		String reg = (flags & 0x80) == 0 ? "D" : "A";
 			
 		reg += String.format("%d", (flags >> 4) & 0x7);
-		
-		String d = toHex(Math.abs((int)displacement), 1);
-		
-		if (displacement < 0) {
-			d = "-" + d;
-		}
 		
 		return String.format("(%s,%s,%s)", d, baseRegister, reg);
 	}
@@ -1267,10 +1276,10 @@ public class AmigaExporter implements CancelledListener {
 		} else if (dataType instanceof Undefined2DataType ||
 				   dataType instanceof WordDataType ||
 				   dataType instanceof UnsignedShortDataType) {
-			write("\tdc.w " + toHex(readDisplacement(data, dataOffset), 2));
+			write("\tdc.w " + toHex(readShort(data, dataOffset), 2));
 		} else if (dataType instanceof SignedWordDataType ||
 				   dataType instanceof ShortDataType) {
-			write(String.format("\tdc.w %d", readDisplacement(data, dataOffset)));
+			write(String.format("\tdc.w %d", readShort(data, dataOffset)));
 		} else if (dataType instanceof Undefined4DataType ||
 				   dataType instanceof DWordDataType ||
 				   dataType instanceof UnsignedIntegerDataType ||
@@ -1303,7 +1312,7 @@ public class AmigaExporter implements CancelledListener {
 			value = data[dataOffset];
 			write("\tdc.b " + toHex(value, 1));
 		} else if (size == 2) {
-			value = readDisplacement(data, dataOffset);
+			value = readShort(data, dataOffset);
 			write("\tdc.w " + toHex(value, 2));
 		} else if (size == 4) {
 			value = bytesToBigEndianLong(data, dataOffset);
