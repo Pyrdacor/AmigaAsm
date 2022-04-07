@@ -44,6 +44,7 @@ import ghidra.program.model.data.UnsignedLongDataType;
 import ghidra.program.model.data.UnsignedShortDataType;
 import ghidra.program.model.data.WordDataType;
 import ghidra.program.model.lang.OperandType;
+import ghidra.program.model.lang.Register;
 import ghidra.program.model.listing.CodeUnit;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Instruction;
@@ -343,6 +344,52 @@ public class AmigaExporter implements CancelledListener {
 		return reg;
 	}
 	
+	private String parseAddressMode(Address address, int mode, int reg, byte[] data,
+		int extensionOffset, int immediateValueBytes) {
+		
+		switch (mode) {
+			case 0:
+				return String.format("D%d", reg);
+			case 1:
+				return getAddrRegisterName(reg);
+			case 2:
+				return "(" + getAddrRegisterName(reg) + ")";
+			case 3:
+				return "(" + getAddrRegisterName(reg) + ")+";
+			case 4:
+				return "-(" + getAddrRegisterName(reg) + ")";
+			case 5:
+				return "(" + getDisplacement(address, readShort(data, extensionOffset), 2) + "," + getAddrRegisterName(reg) + ")";
+			case 6:
+				return this.getIndexExpression(address, getAddrRegisterName(reg), data, extensionOffset);
+			case 7:
+			{
+				switch (reg) {
+					case 0:
+					case 1:
+						return this.getLabelForAddress(address, data, extensionOffset, reg == 0);
+					case 2:
+						return "(" + getDisplacement(address, readShort(data, extensionOffset), 2) + ",PC)";
+					case 3:
+						return this.getIndexExpression(address, "PC", data, extensionOffset);
+					case 4:
+					{
+						switch (immediateValueBytes) {
+							case 1:
+							case 2:
+							case 4:
+								return toHex(data ,extensionOffset, immediateValueBytes);
+							default:
+								throw new RuntimeException("Invalid immediate value size.");
+						}
+					}
+				}
+			}
+		}
+		
+		throw new RuntimeException("Invalid address mode.");
+	}
+	
 	private String getDisplacement(Address callAddress, int displacement, int numBytes) {
 		
 		if (numBytes < 1 || numBytes > 2) {
@@ -359,6 +406,9 @@ public class AmigaExporter implements CancelledListener {
 			ProgramDataTypeManager typeManager,	int hunkIndex, TaskMonitor monitor) {
 		
 		long addressOffset = address.getUnsignedOffset();
+		if (addressOffset == 0x22a2d2) {
+			int x = 0; // TODO: REMOVE
+		}
 		String label = codeUnit.getLabel();
 		
 		if (label != null) {
@@ -454,12 +504,69 @@ public class AmigaExporter implements CancelledListener {
 						disallowRefOperandIndex = toRegister ? 1 : 0;						
 					}
 					
+					// movem and movep need some special care in Ghidra sometimes ...
+					// we just parse them manually
+					
+					if (opcode.equals("movem")) {
+						
+						// reg list
+						String code = codeUnit.toString();
+						Pattern pattern = Pattern.compile("\\{.*\\}");
+						Matcher matcher = pattern.matcher(code);
+						
+						if (matcher.find()) {
+							
+							String regList = code.substring(matcher.start() + 1, matcher.end() - 1)
+								.trim() // trim leading and trailing spaces
+								.replace(' ', '/') // convert "D0 D1" to "D0/D1"
+								.replace("w", ""); // remove 'w' suffix for "D0w" etc
+							
+							int mode = (bytes[1] >> 3) & 0x7;
+							int reg = bytes[1] & 0x7;
+							String arg = parseAddressMode(address, mode, reg, bytes, 4, 0);							
+							boolean toRegister = (bytes[0] & 0x4) != 0;
+							
+							if (toRegister) {
+								write(String.format(" %s,%s", arg, regList));
+							} else {
+								write(String.format(" %s,%s", regList, arg));
+							}
+									
+							return true;
+						}
+
+						throw new RuntimeException(String.format("Invalid movem command at address %08x.", address.getUnsignedOffset()));
+						
+					} else if (opcode.equals("movep")) {
+						
+						int dreg = (bytes[0] >> 1) & 0x7;
+						String areg = getAddrRegisterName(bytes[1] & 0x7);
+						int opmode = (bytes[1] >> 6) & 0x3;						
+						boolean toRegister = opmode < 2;
+						String d = getDisplacement(address, readShort(bytes, 2), 2);
+						
+						if (toRegister) {
+							write(String.format(" (%s,%s),D%d", d, areg, dreg));
+						} else {
+							write(String.format(" D%d,(%s,%s)", dreg, d, areg));
+						}
+						
+						return true;
+					} 
+					
 					int numOps = codeUnit.getNumOperands();
+					
+					if (numOps >= 3) {
+						
+						throw new RuntimeException(String.format("Ghidra reported 3 operands at address %08x which is disallowed.", address.getUnsignedOffset()));
+					}
+					
 					int byteOffset = 2;
 					String prefix = " ";
 					for (int i = 0; i < numOps; ++i) {
 						Reference[] opRefs = codeUnit.getOperandReferences(i);
-						if (disallowRefOperandIndex != i && opRefs != null && opRefs.length != 0) {
+						if (disallowRefOperandIndex != i && opRefs != null && opRefs.length != 0 &&
+							!(codeUnit instanceof Instruction && ((Instruction)codeUnit).getRegister(i) != null)) {				
 							for (int j = 0; j < opRefs.length; ++j) {
 								Reference op = opRefs[j];
 								if (opRefs.length > 1 && !op.isPrimary()) {
@@ -469,7 +576,7 @@ public class AmigaExporter implements CancelledListener {
 									// Ghidra messes up PC related addresses
 									if (Arrays.binarySearch(Instructions.NamesWithPCAddressMode, opcode) >= 0) {
 										
-										if (i == 1 && (mnemonic.equals("move") || mnemonic.startsWith("move."))) {
+										if (i == 1 && (opcode.equals("move"))) {
 											
 											// Note: move encodes the destination first but it is the second operand (i == 1)
 											short fullInstruction = readShort(bytes, 0); // get a full short of the instruction
@@ -529,18 +636,10 @@ public class AmigaExporter implements CancelledListener {
 								} else if (op.isStackReference()) {
 									StackReference sr = (StackReference)op;
 									
-									if (mnemonic.startsWith("movem")) {
-										if (i == 1) {
-											write(prefix + "-(SP)");
-										} else {
-											write(prefix + "(SP)+");
-										}
+									if (sr.getStackOffset() < 0) {
+										write(prefix + "-(SP)");
 									} else {
-										if (sr.getStackOffset() < 0) {
-											write(prefix + "-(SP)");
-										} else {
-											write(prefix + "(SP)+");
-										}
+										write(prefix + "(SP)+");
 									}
 								} else {
 									throw new RuntimeException(String.format("Unsupported operand '%s' at address %08x.", op.getReferenceType().getName(), address.getUnsignedOffset()));
@@ -551,29 +650,9 @@ public class AmigaExporter implements CancelledListener {
 								Instruction inst = (Instruction)codeUnit;
 								int type = inst.getOperandType(i);
 								if (type == OperandType.DYNAMIC) { // (A0)+ etc
-									if (mnemonic.startsWith("movem")) {
-										boolean toRegister = (bytes[0] & 0x4) != 0;
-										
-										if (toRegister && i == 1 ||
-											!toRegister && i == 0) {
-											// reg list
-											String code = codeUnit.toString();
-											Pattern pattern = Pattern.compile("\\{.*\\}");
-											Matcher matcher = pattern.matcher(code);
-											
-											if (matcher.find()) {
-												
-												write(prefix + code.substring(matcher.start() + 1, matcher.end() - 1).trim().replace(' ', '/'));
-												prefix = ",";
-												continue;												
-											}
-
-											throw new RuntimeException(String.format("Invalid movem command at address %08x.", address.getUnsignedOffset()));
-										}
-									}
 									int mode = (bytes[1] >> 3) & 0x7;
 									int reg = bytes[1] & 0x7;
-									if (i == 1 && (mnemonic.equals("move") || mnemonic.startsWith("move."))) {
+									if (i == 1 && (opcode.equals("move"))) {
 										// Note: move encodes the destination first but it is the second operand (i == 1)
 										short fullInstruction = readShort(bytes, 0); // get a full short of the instruction
 										mode = (fullInstruction >> 6) & 0x7;
@@ -586,94 +665,19 @@ public class AmigaExporter implements CancelledListener {
 										reg = (bytes[0] >> 1) & 0x7;
 										write(prefix + "D" + Integer.toString(reg));
 									} else {
-										// TODO: I guess there are more special commands which always use dynamic addressing									
-										switch (mode) {
-											case 0: // Dn (should be not dynamic)
-											case 1: // An (should be not dynamic)
-												throw new RuntimeException("Unexpected address mode");
-											case 2: // (An), should be already handled
-												write(prefix + "(" + getAddrRegisterName(reg) + ")");
-												break;
-											case 3: // (An)+
-												write(prefix + "(" + getAddrRegisterName(reg) + ")+");
-												break;
-											case 4: // -(An)
-												write(prefix + "-(" + getAddrRegisterName(reg) + ")");
-												break;
-											case 5: // (d,An)
-											{
-												int displacement = readShort(bytes, byteOffset);												
-												String d = getDisplacement(address, displacement, 2);
-												
-												write(prefix + String.format("(%s,%s)", d, getAddrRegisterName(reg)));
-												byteOffset += 2;
-												break;
-											}
-											case 6: // (d,An,Xn)
-												write(prefix + getIndexExpression(address, getAddrRegisterName(reg), bytes, byteOffset));
-												byteOffset += 2;
-												break;
-											case 7: {
-												switch (reg) {
-													case 0: // absolute short
-													case 1: // absolute long
-													case 4: // immediate
-														// all of them should be handled elsewhere (scalar, reference)
-														throw new RuntimeException("Unexpected address mode");
-													case 2: // (d,PC)
-													{
-														int displacement = readShort(bytes, byteOffset);
-														String d = getDisplacement(address, displacement, 2);
-														write(prefix + String.format("(%s,PC)", d));
-														byteOffset += 2;
-														break;
-													}
-													case 3: // (d,PC,Xn)
-														write(prefix + getIndexExpression(address, "PC", bytes, byteOffset));
-														byteOffset += 2;
-														break;
-												}
-											}
-										}
+										// TODO: I guess there are more special commands which always use dynamic addressing
+										String arg = parseAddressMode(address, mode, reg, bytes, byteOffset, 0); // immediate won't work with 0, which is ok
+										write(prefix + arg);
 									}
 								} else if (type == OperandType.SCALAR) {
 									write(prefix + "#" + inst.getScalar(i).toString(16, true, true, "$", ""));
-								} else if (type == OperandType.REGISTER) {
+								} else if ((type & OperandType.REGISTER) != 0) {
 									String reg = trimRegSuffix(inst.getRegister(i).toString());
-									if (reg.equals("SP") && mnemonic.startsWith("movem")) {
-										// -(SP) is stored as SP for movem for some reason
-										// but it is never used directly as SP so
-										// we can safely replace it with -(SP) here.
-										reg = "-(SP)";
+									if ((type & OperandType.INDIRECT) != 0) {
+										write(prefix + "(" + reg + ")");
+									} else {
+										write(prefix + reg);
 									}
-									write(prefix + reg);
-								} else if (type == (OperandType.REGISTER | OperandType.INDIRECT)) {
-									write(prefix + "(" + trimRegSuffix(inst.getRegister(i).toString()) + ")");
-								} else if (type == (OperandType.ADDRESS | OperandType.DYNAMIC)) {
-									// Sometimes used for movem reg list
-									if (mnemonic.startsWith("movem")) {
-										boolean toRegister = (bytes[0] & 0x4) != 0;
-										
-										if (toRegister && i == 1 ||
-											!toRegister && i == 0) {
-											// reg list
-											String code = codeUnit.toString();
-											Pattern pattern = Pattern.compile("\\{.*\\}");
-											Matcher matcher = pattern.matcher(code);
-											
-											if (matcher.find()) {
-												
-												write(prefix + code.substring(matcher.start() + 1, matcher.end() - 1).trim().replace(' ', '/'));
-												prefix = ",";
-												continue;												
-											}
-
-											throw new RuntimeException(String.format("Invalid movem command at address %08x.", address.getUnsignedOffset()));
-										}
-									}
-									
-									throw new RuntimeException(String.format("Unsupported operand type $%08x at address %08x.", type, address.getUnsignedOffset()));
-
 								} else {
 									throw new RuntimeException(String.format("Unsupported operand type $%08x at address %08x.", type, address.getUnsignedOffset()));
 								}
@@ -1086,9 +1090,12 @@ public class AmigaExporter implements CancelledListener {
 		return "$" + result;
 	}
 	
-	private String getLabelForAddress(Address address, byte[] addressData, int dataOffset) {
+	private String getLabelForAddress(Address currentAddress, byte[] addressData,
+			int dataOffset, boolean is16BitAddress) {
 		
-		long offset = bytesToBigEndianLong(addressData, dataOffset);
+		long offset = is16BitAddress
+			? readShort(addressData, dataOffset)
+			: bytesToBigEndianLong(addressData, dataOffset);
 		
 		if (offset == 0) {
 			return "0";
@@ -1096,11 +1103,11 @@ public class AmigaExporter implements CancelledListener {
 			return "-1";
 		}
 		
-		long current = address.getOffset();
+		long current = currentAddress.getOffset();
 		long add = offset - current;
 		
 		try {
-			address = address.add(add);
+			currentAddress = currentAddress.add(add);
 		} catch (Exception e) {
 			String offsetString = toHex(offset, 4);
 			System.out.println(String.format("Label couldn't be determined for offset %s. Referenced at address %08x.",
@@ -1108,7 +1115,7 @@ public class AmigaExporter implements CancelledListener {
 			return offsetString;
 		}
 
-		return getLabelForAddress(address, offset);
+		return getLabelForAddress(currentAddress, offset);
 	}
 	
 	private String getLabelForAddress(Memory memory, byte[] addressData, int dataOffset) {
@@ -1261,7 +1268,7 @@ public class AmigaExporter implements CancelledListener {
 			writeArray(arr.getNumElements(), elementType, typeManager, data, dataOffset, monitor, address, hunkIndex);
 			return;					
 		} else if (dataType instanceof Pointer) {
-			writePointerLabel(getLabelForAddress(address, data, dataOffset));
+			writePointerLabel(getLabelForAddress(address, data, dataOffset, false));
 			return;				
 		} else if (dataType instanceof TypeDef) {
 			TypeDef td = (TypeDef)dataType;
