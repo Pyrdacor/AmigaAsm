@@ -76,7 +76,7 @@ public class AmigaAsmExporter extends Exporter {
 		newlineOptions.add(OptionExportNewlineBoth);
 		newlineOptions.add(OptionExportNewlineLineFeed);
 		newlineOptions.add(OptionExportNewlineCarriageReturn);
-		list.add(new RadioButtonOptions(OptionExportNewline, newlineOptions, 0));
+		list.add(new ChoiceOptions(OptionExportNewline, newlineOptions, 0));
 
 		return list;
 	}

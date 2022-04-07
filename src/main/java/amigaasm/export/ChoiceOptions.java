@@ -7,14 +7,14 @@ import java.util.List;
 import ghidra.app.util.Option;
 import ghidra.app.util.OptionListener;
 
-public class RadioButtonOptions extends Option {
+public class ChoiceOptions extends Option {
 	
 	private List<String> possibleOptions;
 	private int selectedIndex = -1;
 	private Choice chooser = new Choice();
 	private OptionListener listener = null;
 	
-	public RadioButtonOptions(String name, List<String> possibleOptions, int initialSelectedIndex) {
+	public ChoiceOptions(String name, List<String> possibleOptions, int initialSelectedIndex) {
 		super(name + "_Group", name, possibleOptions.get(initialSelectedIndex));
 		
 		this.possibleOptions = possibleOptions;
@@ -46,7 +46,7 @@ public class RadioButtonOptions extends Option {
 	@Override
 	public Option copy() {
 		
-		return new RadioButtonOptions(getName(), possibleOptions, selectedIndex);
+		return new ChoiceOptions(getName(), possibleOptions, selectedIndex);
 	}
 	
 	@Override
