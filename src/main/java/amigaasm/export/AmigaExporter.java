@@ -163,6 +163,37 @@ public class AmigaExporter implements CancelledListener {
 			writeLine(";   }"); // end of section
 		}
 		
+		// If custom labels are inside structs or arrays,
+		// it can happen that they are not correctly tracked
+		// in 'customLabels' but only in 'customLabelsByAddress'.
+		// So move them over now.
+		
+		customLabelsByAddress.forEach((Address addr, String label) -> {
+			
+			int offset = 0;
+			
+			while (true) {
+				
+				Integer line = this.lineNumbersByAddress.get(addr);
+
+				if (line != null) {
+					
+					if (!customLabels.containsKey(line)) {
+						customLabels.put(line + offset, label);
+					}
+					
+					break;
+				}
+				
+				addr = addr.subtract(1);
+				++offset;
+				
+				if (addr.getUnsignedOffset() == 0) {
+					break;
+				}					
+			}
+		});
+		
 		OutputStreamWriter writer = new OutputStreamWriter(
             new FileOutputStream(file.getPath()), "UTF-8");
 		
@@ -417,7 +448,7 @@ public class AmigaExporter implements CancelledListener {
 			ProgramDataTypeManager typeManager,	int hunkIndex, TaskMonitor monitor) {
 		
 		long addressOffset = address.getUnsignedOffset();
-		if (addressOffset == 0x002205e6) {
+		if (addressOffset == 0x0022af3c) {
 			int x = 0; // TODO: REMOVE
 		}
 		String label = codeUnit.getLabel();
@@ -1141,16 +1172,21 @@ public class AmigaExporter implements CancelledListener {
 		}
 			
 		// If no label was found, add one
-		customLabel = String.format("LAB_" + toHex(fallback, 4, false));
-		customLabelsByAddress.put(address, customLabel);
-		
-		Integer lineNumberOfAddress = lineNumbersByAddress.get(address);
-		
-		if (lineNumberOfAddress != null) {
-			customLabels.put(lineNumberOfAddress, customLabel);
+		if (fallback >= 0x21f000 && fallback < 0x31f000) {		
+			customLabel = String.format("LAB_" + toHex(fallback, 4, false));
+			customLabelsByAddress.put(address, customLabel);
+			
+			Integer lineNumberOfAddress = lineNumbersByAddress.get(address);
+			
+			if (lineNumberOfAddress != null) {
+				customLabels.put(lineNumberOfAddress, customLabel);
+			}
+			
+			return customLabel;
+		} else {
+			// If the address is out of range, just use the hex representation
+			return toHex(fallback, 4, true);
 		}
-		
-		return customLabel;
 	}
 	
 	private static String toHex(long value, int sizeInBytes) {
