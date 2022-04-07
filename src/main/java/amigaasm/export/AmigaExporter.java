@@ -406,7 +406,7 @@ public class AmigaExporter implements CancelledListener {
 			ProgramDataTypeManager typeManager,	int hunkIndex, TaskMonitor monitor) {
 		
 		long addressOffset = address.getUnsignedOffset();
-		if (addressOffset == 0x22a2d2) {
+		if (addressOffset == 0x0023fe74) {
 			int x = 0; // TODO: REMOVE
 		}
 		String label = codeUnit.getLabel();
@@ -552,13 +552,24 @@ public class AmigaExporter implements CancelledListener {
 						}
 						
 						return true;
-					} 
+					}
 					
 					int numOps = codeUnit.getNumOperands();
 					
 					if (numOps >= 3) {
 						
 						throw new RuntimeException(String.format("Ghidra reported 3 operands at address %08x which is disallowed.", address.getUnsignedOffset()));
+					}
+					
+					if (numOps > 1 && (opcode.equals("jmp") || opcode.equals("jsr")) ) {
+						
+						// Ghidra sometimes expresses displacements here as two operands
+						// In that case we have to parse the operand manually
+						int mode = (bytes[1] >> 3) & 0x7;
+						int reg = bytes[1] & 0x7;
+						String arg = parseAddressMode(address, mode, reg, bytes, 2, 0);	
+						write(String.format(" %s", arg));
+						return true;
 					}
 					
 					int byteOffset = 2;
@@ -670,11 +681,17 @@ public class AmigaExporter implements CancelledListener {
 										write(prefix + arg);
 									}
 								} else if (type == OperandType.SCALAR) {
-									write(prefix + "#" + inst.getScalar(i).toString(16, true, true, "$", ""));
+									String p = prefix;
+									if (!opcode.equals("lea") && !opcode.equals("pea")) {
+										p += "#"; // prefix a '#' if not lea or pea
+									}
+									write(p + inst.getScalar(i).toString(16, true, true, "$", ""));
 								} else if ((type & OperandType.REGISTER) != 0) {
 									String reg = trimRegSuffix(inst.getRegister(i).toString());
 									if ((type & OperandType.INDIRECT) != 0) {
 										write(prefix + "(" + reg + ")");
+									} else if (opcode.equals("cmpm")) { // special treatment
+										write(prefix + "(" + reg + ")+"); // cmpm always uses (An)+
 									} else {
 										write(prefix + reg);
 									}
