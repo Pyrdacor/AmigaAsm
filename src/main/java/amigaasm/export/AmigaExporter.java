@@ -378,7 +378,10 @@ public class AmigaExporter implements CancelledListener {
 							case 1:
 							case 2:
 							case 4:
-								return toHex(data ,extensionOffset, immediateValueBytes);
+								return toHex(data, extensionOffset, immediateValueBytes);
+							case 8:
+								// we support divsl/divul with 64 bit but will only read the 32 bit portion
+								return toHex(data, extensionOffset + 4, immediateValueBytes);
 							default:
 								throw new RuntimeException("Invalid immediate value size.");
 						}
@@ -490,6 +493,30 @@ public class AmigaExporter implements CancelledListener {
 								writeLine("; WARNING: Removed movec writing from " + regName + " to " + crName);
 							}
 						}
+						
+						return true;
+					}
+					if (m68000 && (opcode.equals("divsl") || opcode.equals("divul"))) {
+						
+						int dq = (bytes[2] >> 4) & 0x7;
+						int dr = bytes[3] & 0x7;
+						
+						if (dq != dr) {
+							throw new RuntimeException(opcode + " is not supported for mismatching dq and dr.");
+						}
+						
+						if (writeComments) {
+							writeLine("; WARNING: Replaced " + mnemonic);
+						}
+						
+						write("\t" + opcode.substring(0, opcode.length() - 1) + ".w ");
+						
+						int mode = (bytes[1] >> 3) & 0x7;
+						int reg = bytes[1] & 0x7;
+						int immediateBytes = (bytes[2] & 0x4) != 0 ? 8 : 4; // 64 or 32 bits
+						String arg = parseAddressMode(address, mode, reg, bytes, 4, immediateBytes);
+						
+						write(String.format("%s,D%d", arg, dq));
 						
 						return true;
 					}
@@ -692,6 +719,8 @@ public class AmigaExporter implements CancelledListener {
 										write(prefix + "(" + reg + ")");
 									} else if (opcode.equals("cmpm")) { // special treatment
 										write(prefix + "(" + reg + ")+"); // cmpm always uses (An)+
+									} else if (i == 0 && opcode.equals("lea")) { // special treatment
+										write(prefix + "(" + reg + ")"); // first arg of lea always uses (An) and never An
 									} else {
 										write(prefix + reg);
 									}
