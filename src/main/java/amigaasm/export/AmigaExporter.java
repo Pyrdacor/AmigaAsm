@@ -606,7 +606,7 @@ public class AmigaExporter implements CancelledListener {
 										}
 									}
 								} else if (type == OperandType.SCALAR) {
-									write(prefix + inst.getScalar(i).toString(16, true, true, "#$", ""));
+									write(prefix + "#" + inst.getScalar(i).toString(16, true, true, "$", ""));
 								} else if (type == OperandType.REGISTER) {
 									String reg = trimRegSuffix(inst.getRegister(i).toString());
 									if (reg.equals("SP") && mnemonic.startsWith("movem")) {
@@ -772,7 +772,14 @@ public class AmigaExporter implements CancelledListener {
 			return 4;
 		} else if (mnemonic.equals("addr")) {
 			data = ensureData(data, memory, address, 4);
-			write("\tdc.l " + this.getLabelForAddress(memory, data, dataOffset));
+			String label = this.getLabelForAddress(memory, data, dataOffset);
+			if (label.equals("0")) {
+				write("\tdc.l $00000000 ; null pointer address");
+			} else if (label.equals("-1")) {
+				write("\tdc.l $ffffffff ; invalid address marker");
+			} else {
+				write("\tdc.l " + label);
+			}
 			return 4;
 		} else if (mnemonic.equals("dq")) {
 			data = ensureData(data, memory, address, 8);
