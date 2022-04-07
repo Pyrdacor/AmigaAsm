@@ -37,6 +37,7 @@ public class AmigaAsmExporter extends Exporter {
 
 	private AmigaExporter exporter = new AmigaExporter();
 	public static final String OptionExportComments = "Export comments";
+	public static final String OptionWriteComments = "Generate doc comments";
 	public static final String OptionExport68000 = "68000 compatible";
 	public static final String OptionExportNewline = "Newline";
 	public static final String OptionExportNewlineCarriageReturn = "\\r";
@@ -68,6 +69,7 @@ public class AmigaAsmExporter extends Exporter {
 		List<Option> list = new ArrayList<>();
 
 		list.add(new Option(OptionExportComments, true));
+		list.add(new Option(OptionWriteComments, true));
 		list.add(new Option(OptionExport68000, false));
 		
 		List<String> newlineOptions = new ArrayList<String>();

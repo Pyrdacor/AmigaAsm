@@ -60,6 +60,7 @@ public class AmigaExporter implements CancelledListener {
 	
 	// Options
 	private boolean exportComments = true;
+	private boolean writeComments = true;
 	private boolean m68000 = false;
 	private String newline = "\r\n";
 	
@@ -87,27 +88,30 @@ public class AmigaExporter implements CancelledListener {
 		for (int i = 0; i < options.size(); ++i) {
 			Option option = options.get(i);
 			switch (option.getName()) {
-			case AmigaAsmExporter.OptionExportComments:
-				exportComments = (boolean)option.getValue();
-				break;
-			case AmigaAsmExporter.OptionExport68000:
-				m68000 = (boolean)option.getValue();
-				break;
-			case AmigaAsmExporter.OptionExportNewline: {
-				int newlineOption = (Integer)option.getValue();
-				switch (newlineOption) {
-					case 1:
-						newline = "\n";
-						break;
-					case 2:
-						newline = "\r";
-						break;
-					default:
-						newline = "\r\n";
+				case AmigaAsmExporter.OptionExportComments:
+					exportComments = (boolean)option.getValue();
+					break;
+				case AmigaAsmExporter.OptionWriteComments:
+					writeComments = (boolean)option.getValue();
+					break;
+				case AmigaAsmExporter.OptionExport68000:
+					m68000 = (boolean)option.getValue();
+					break;
+				case AmigaAsmExporter.OptionExportNewline: {
+					int newlineOption = (Integer)option.getValue();
+					switch (newlineOption) {
+						case 1:
+							newline = "\n";
+							break;
+						case 2:
+							newline = "\r";
+							break;
+						default:
+							newline = "\r\n";
+							break;
+						}
 						break;
 					}
-					break;
-				}
 			}
 		}
 	}
@@ -154,7 +158,7 @@ public class AmigaExporter implements CancelledListener {
 			}
 		}
 		
-		if (lastBlockIndex != -1) {
+		if (writeComments && lastBlockIndex != -1) {
 			writeLine(";   }"); // end of section
 		}
 		
@@ -211,22 +215,32 @@ public class AmigaExporter implements CancelledListener {
 				if (lastHunkIndex != -1) {
 					writeLine(";   }"); // end of section
 				}
-				writeLine();
-				writeLine("; " + headerBar);
+				if (writeComments) {
+					writeLine();
+					writeLine("; " + headerBar);
+				}
 				if (!matcher.matches()) {
-					writeLine("; " + getHeaderTitle(hunkName));
+					if (writeComments) {
+						writeLine("; " + getHeaderTitle(hunkName));
+					}
 				} else {
 					currentHunkType = matcher.group(1);
 					boolean isBss = currentHunkType.equals("BSS");
 					hunkIndex = Integer.parseInt(matcher.group(2));
-					writeLine("; " + getHeaderTitle(String.format("HUNK%s - %s", matcher.group(2), isBss ? "BSS " : currentHunkType)));
+					if (writeComments) {
+						writeLine("; " + getHeaderTitle(String.format("HUNK%s - %s", matcher.group(2), isBss ? "BSS " : currentHunkType)));
+					}
 				}
-				writeLine("; " + headerBar);
+				if (writeComments) {
+					writeLine("; " + headerBar);
+				}
 			}
 
 			if (hunkIndex != -1) {
 				writeLine(String.format("\tsection\thunk%02d,%s", hunkIndex, currentHunkType));
-				writeLine(";   {"); // begin section
+				if (writeComments) {
+					writeLine(";   {"); // begin section
+				}
 			}
 			
 			lastBlockIndex = blockIndex;
@@ -384,7 +398,9 @@ public class AmigaExporter implements CancelledListener {
 						String crName = ControlRegisters.Names.get(crCode);
 						
 						if (crName == null) {
-							writeLine(String.format("; WARNING: movec was used with unknown control register code $%03x", crCode));
+							if (writeComments) {
+								writeLine(String.format("; WARNING: movec was used with unknown control register code $%03x", crCode));
+							}
 							return true;
 						}
 						
@@ -396,7 +412,9 @@ public class AmigaExporter implements CancelledListener {
 
 						if ((bytes[1] & 0x1) == 0) { // CR to R
 							
-							writeLine("; WARNING: Replaced movec writing from " + crName + " to " + regName);
+							if (writeComments) {
+								writeLine("; WARNING: Replaced movec writing from " + crName + " to " + regName);
+							}
 							if (dataRegister) {
 								// move 0 to Dn
 								write("\tmoveq #$0," + regName);
@@ -406,7 +424,9 @@ public class AmigaExporter implements CancelledListener {
 							}
 						} else { // R to CR
 							// Ignore writing to control register
-							writeLine("; WARNING: Removed movec writing from " + regName + " to " + crName);
+							if (writeComments) {
+								writeLine("; WARNING: Removed movec writing from " + regName + " to " + crName);
+							}
 						}
 						
 						return true;
@@ -483,7 +503,7 @@ public class AmigaExporter implements CancelledListener {
 														write(prefix + "(" + this.getLabelForAddress(targetAddr, null) + ",PC)");
 													} else { // mode 3
 														targetAddr = address.add(readIndexDisplacement(bytes, byteOffset));
-														write(prefix + "(" + this.getLabelForAddress(targetAddr, null) + String.format(",PC,D%d)", (bytes[byteOffset] >> 4) & 0x7));
+														write(prefix + "(" + getLabelForAddress(targetAddr, null) + String.format(",PC,D%d)", (bytes[byteOffset] >> 4) & 0x7));
 													}
 													
 													prefix = ",";
@@ -495,13 +515,9 @@ public class AmigaExporter implements CancelledListener {
 									}
 							
 									Address addr = op.getToAddress();		
-									String targetLabel = this.getLabelForAddress(addr, null);
-									if (targetLabel != null) {
-										write(prefix + targetLabel);
-									} else {
-										// TODO: maybe use address?
-										throw new RuntimeException(String.format("Missing label for target address %08x.", addr.getUnsignedOffset()));
-									}
+									String targetLabel = getLabelForAddress(addr, null);
+									write(prefix + targetLabel);
+
 								} else if (op.isStackReference()) {
 									StackReference sr = (StackReference)op;
 									
@@ -566,8 +582,7 @@ public class AmigaExporter implements CancelledListener {
 										switch (mode) {
 											case 0: // Dn (should be not dynamic)
 											case 1: // An (should be not dynamic)
-												System.out.println("Unexpected address mode");
-												break;
+												throw new RuntimeException("Unexpected address mode");
 											case 2: // (An), should be already handled
 												write(prefix + "(" + getAddrRegisterName(reg) + ")");
 												break;
@@ -578,9 +593,16 @@ public class AmigaExporter implements CancelledListener {
 												write(prefix + "-(" + getAddrRegisterName(reg) + ")");
 												break;
 											case 5: // (d,An)
-												write(prefix + String.format("($%04x,%s)", readDisplacement(bytes, byteOffset), getAddrRegisterName(reg)));
+											{
+												int displacement = readDisplacement(bytes, byteOffset);
+												String d = toHex(Math.abs(displacement), 2);
+												if (displacement < 0) {
+													d = "-" + d;
+												}
+												write(prefix + String.format("(%s,%s)", d, getAddrRegisterName(reg)));
 												byteOffset += 2;
 												break;
+											}
 											case 6: // (d,An,Xn)
 												write(prefix + getIndexExpression(getAddrRegisterName(reg), bytes, byteOffset));
 												byteOffset += 2;
@@ -591,12 +613,18 @@ public class AmigaExporter implements CancelledListener {
 													case 1: // absolute long
 													case 4: // immediate
 														// all of them should be handled elsewhere (scalar, reference)
-														System.out.println("Unexpected address mode");
-														break;
+														throw new RuntimeException("Unexpected address mode");
 													case 2: // (d,PC)
-														write(prefix + String.format("($%04x,PC)", readDisplacement(bytes, byteOffset)));
+													{
+														int displacement = readDisplacement(bytes, byteOffset);
+														String d = toHex(Math.abs(displacement), 2);
+														if (displacement < 0) {
+															d = "-" + d;
+														}
+														write(prefix + String.format("(%s,PC)", d));
 														byteOffset += 2;
 														break;
+													}
 													case 3: // (d,PC,Xn)
 														write(prefix + getIndexExpression("PC", bytes, byteOffset));
 														byteOffset += 2;
@@ -649,7 +677,6 @@ public class AmigaExporter implements CancelledListener {
 							} else {
 								
 								throw new RuntimeException(String.format("Couldn't read operands at address %08x.", address.getUnsignedOffset()));
-								// TODO: error
 							}
 						}
 						prefix = ",";
@@ -723,6 +750,23 @@ public class AmigaExporter implements CancelledListener {
 		}
 	}
 	
+	private void writePointerLabel(String label) {
+		
+		if (label.equals("0")) {
+			write("\tdc.l $00000000");
+			if (writeComments) {		
+				write(" ; null pointer address");
+			}
+		} else if (label.equals("-1")) {
+			write("\tdc.l $ffffffff");
+			if (writeComments) {
+				write(" ; invalid address marker");
+			}
+		} else {
+			write("\tdc.l " + label);
+		}
+	}
+	
 	private static DataType findFirstDataType(ProgramDataTypeManager typeManager, String name) {
 		
 		List<DataType> types = new ArrayList<DataType>();
@@ -759,34 +803,25 @@ public class AmigaExporter implements CancelledListener {
 			return data.length - dataOffset;
 		} else if (mnemonic.equals("db")) {
 			data = ensureData(data, memory, address, 1);
-			write(String.format("\tdc.b $%02x", data[dataOffset]));
+			write("\tdc.b " + toHex(data[dataOffset], 1));
 			return 1;
 		} else if (mnemonic.equals("dw")) {
 			data = ensureData(data, memory, address, 2);
-			write(String.format("\tdc.w $%02x%02x", data[dataOffset], data[dataOffset + 1]));
+			write("\tdc.w " + toHex(data, dataOffset, 2));
 			return 2;
 		} else if (mnemonic.equals("ddw") || mnemonic.equals("dl")) {
 			data = ensureData(data, memory, address, 4);
-			write(String.format("\tdc.l $%02x%02x%02x%02x", data[dataOffset], data[dataOffset + 1],
-				data[dataOffset + 2], data[dataOffset + 3]));
+			write("\tdc.l " + toHex(data, dataOffset, 4));
 			return 4;
 		} else if (mnemonic.equals("addr")) {
 			data = ensureData(data, memory, address, 4);
 			String label = this.getLabelForAddress(memory, data, dataOffset);
-			if (label.equals("0")) {
-				write("\tdc.l $00000000 ; null pointer address");
-			} else if (label.equals("-1")) {
-				write("\tdc.l $ffffffff ; invalid address marker");
-			} else {
-				write("\tdc.l " + label);
-			}
+			writePointerLabel(label);
 			return 4;
 		} else if (mnemonic.equals("dq")) {
 			data = ensureData(data, memory, address, 8);
-			writeLine(String.format("\tdc.l $%02x%02x%02x%02x", data[dataOffset], data[dataOffset + 1],
-				data[dataOffset + 2], data[dataOffset + 3]));
-			write(String.format("\tdc.l $%02x%02x%02x%02x", data[dataOffset + 4], data[dataOffset + 5],
-				data[dataOffset + 6], data[dataOffset + 7]));
+			write("\tdc.l " + toHex(data, dataOffset, 4));
+			write("\tdc.l " + toHex(data, dataOffset + 4, 4));
 			return 4;
 		} else if (mnemonic.equals("char")) {
 			data = ensureData(data, memory, address, 1);
@@ -800,7 +835,9 @@ public class AmigaExporter implements CancelledListener {
 				
 				if (arrType != null) {
 					
-					writeLine("\t; " + mnemonic);
+					if (writeComments) {
+						writeLine("\t; " + mnemonic);
+					}
 					Array arr = (Array)arrType;
 					int length = arr.getNumElements();
 					DataType elemType = arr.getDataType();
@@ -822,8 +859,10 @@ public class AmigaExporter implements CancelledListener {
 						if (typeName.equals("ds") || typeName.equals("db") ||
 							typeName.equals("dw") || typeName.equals("ddw") ||
 							typeName.equals("dl") || typeName.equals("addr") ||
-							typeName.equals("char") || typeName.equals("dq")) {						
-							writeLine("\t; " + mnemonic);
+							typeName.equals("char") || typeName.equals("dq")) {
+							if (writeComments) {
+								writeLine("\t; " + mnemonic);
+							}
 						} else {					
 							monitor.setMessage(String.format("Unrecognized data type or mnemonic found in hunk %d at address %08x: %s", hunkIndex, address.getUnsignedOffset(), mnemonic));
 							monitor.cancel();
@@ -831,7 +870,9 @@ public class AmigaExporter implements CancelledListener {
 						}
 					}
 					else {
-						writeLine("\t; " + toCTypeName(dataType, typeName) + mnemonic.substring(arrIndex));
+						if (writeComments) {
+							writeLine("\t; " + toCTypeName(dataType, typeName) + mnemonic.substring(arrIndex));
+						}
 					}
 					
 					writeArray(mnemonic.substring(arrIndex), typeName, typeManager, data,
@@ -843,7 +884,9 @@ public class AmigaExporter implements CancelledListener {
 			} else {
 
 				if (mnemonic.equals("??")) {
-					writeLine(String.format("; Unknown data at address %08x.", address.getUnsignedOffset()));
+					if (writeComments) {
+						writeLine(String.format("; Unknown data at address %08x.", address.getUnsignedOffset()));
+					}
 					write("\tdc.b ");
 					for (int i = 0; i < data.length; ++i) {
 						if (i != 0) {
@@ -853,7 +896,7 @@ public class AmigaExporter implements CancelledListener {
 								write("\t\t");
 							}
 						}
-						write(String.format("$%02x", data[i]));
+						write(toHex(data[i], 1));
 					}
 					return data.length;
 				}
@@ -866,7 +909,9 @@ public class AmigaExporter implements CancelledListener {
 					return 0;
 				}
 				
-				writeLine("\t; " + toCTypeName(dataType, mnemonic));
+				if (writeComments) {
+					writeLine("\t; " + toCTypeName(dataType, mnemonic));
+				}
 				
 				if (dataType instanceof Structure) {
 					Structure s = (Structure)dataType;
@@ -880,7 +925,7 @@ public class AmigaExporter implements CancelledListener {
 					return e.getLength();					
 				} else if (dataType instanceof Pointer) {
 					data = ensureData(data, memory, address, 4);
-					write("dc.l " + getLabelForAddress(memory, data, dataOffset));
+					writePointerLabel(getLabelForAddress(memory, data, dataOffset));
 					return 4;				
 				} else if (dataType instanceof TypeDef) {
 					TypeDef td = (TypeDef)dataType;
@@ -980,7 +1025,7 @@ public class AmigaExporter implements CancelledListener {
 		}
 			
 		// If no label was found, add one
-		customLabel = String.format("LAB_%08x", fallback);
+		customLabel = String.format("LAB_" + toHex(fallback, 4));
 		customLabelsByAddress.put(address, customLabel);
 		
 		Integer lineNumberOfAddress = lineNumbersByAddress.get(address);
@@ -990,6 +1035,41 @@ public class AmigaExporter implements CancelledListener {
 		}
 		
 		return customLabel;
+	}
+	
+	private static String toHex(long value, int sizeInBytes) {
+		
+		String result;
+		
+		switch (sizeInBytes) {
+			case 1:
+				result = String.format("$%02x", value & 0xff);
+				break;
+			case 2:
+				result = String.format("$%04x", value & 0xffff);
+				break;
+			case 4:
+				result = String.format("$%08x", value & 0xffffffff);
+				break;
+			default:
+				throw new RuntimeException("Invalid sizeInBytes value for toHex function.");
+		}
+		
+		int length = 1 + sizeInBytes * 2;
+		
+		return result.substring(result.length() - length);
+	}
+	
+	private static String toHex(byte[] data, int dataOffset, int length) {
+
+		String result = "";
+		
+		for (int i = 0; i < length; ++i) {
+			
+			result += toHex(data[dataOffset + i], 1);
+		}
+		
+		return result;
 	}
 	
 	private String getLabelForAddress(Address address, byte[] addressData, int dataOffset) {
@@ -1008,8 +1088,10 @@ public class AmigaExporter implements CancelledListener {
 		try {
 			address = address.add(add);
 		} catch (Exception e) {
-			System.out.println(String.format("Label couldn't be determined for offset $%08x. Referenced at address %08x.", offset & 0xffffffff, current));
-			return String.format("$%08x", offset & 0xffffffff);
+			String offsetString = toHex(offset, 4);
+			System.out.println(String.format("Label couldn't be determined for offset %s. Referenced at address %08x.",
+				offsetString, current));
+			return offsetString;
 		}
 
 		return getLabelForAddress(address, offset);
@@ -1085,7 +1167,7 @@ public class AmigaExporter implements CancelledListener {
 			
 		reg += String.format("%d", (flags >> 4) & 0x7);
 		
-		String d = String.format("$%02x", Math.abs((int)displacement) & 0xff);
+		String d = toHex(Math.abs((int)displacement), 1);
 		
 		if (displacement < 0) {
 			d = "-" + d;
@@ -1121,9 +1203,9 @@ public class AmigaExporter implements CancelledListener {
 			offset += length;
 			address = address.add(length);
 			
-			String comment = component.getComment();
+			String comment = exportComments ? component.getComment() : null;
 			
-			if (comment == null) {
+			if (comment == null && writeComments) {
 				comment = component.getFieldName();
 				
 				if (comment != null) {
@@ -1170,7 +1252,7 @@ public class AmigaExporter implements CancelledListener {
 			writeArray(arr.getNumElements(), elementType, typeManager, data, dataOffset, monitor, address, hunkIndex);
 			return;					
 		} else if (dataType instanceof Pointer) {
-			write("\tdc.l " + getLabelForAddress(address, data, dataOffset));
+			writePointerLabel(getLabelForAddress(address, data, dataOffset));
 			return;				
 		} else if (dataType instanceof TypeDef) {
 			TypeDef td = (TypeDef)dataType;
@@ -1179,13 +1261,13 @@ public class AmigaExporter implements CancelledListener {
 			return;
 		} else if (dataType instanceof Undefined1DataType ||
 				   dataType instanceof ByteDataType) {
-			write(String.format("\tdc.b $%02x", data[dataOffset]));
+			write("\tdc.b " + toHex(data[dataOffset], 1));
 		} else if (dataType instanceof SignedByteDataType) {
 			write(String.format("\tdc.b %d", data[dataOffset]));
 		} else if (dataType instanceof Undefined2DataType ||
 				   dataType instanceof WordDataType ||
 				   dataType instanceof UnsignedShortDataType) {
-			write(String.format("\tdc.w $%04x", readDisplacement(data, dataOffset) & 0xffff));
+			write("\tdc.w " + toHex(readDisplacement(data, dataOffset), 2));
 		} else if (dataType instanceof SignedWordDataType ||
 				   dataType instanceof ShortDataType) {
 			write(String.format("\tdc.w %d", readDisplacement(data, dataOffset)));
@@ -1193,7 +1275,7 @@ public class AmigaExporter implements CancelledListener {
 				   dataType instanceof DWordDataType ||
 				   dataType instanceof UnsignedIntegerDataType ||
 				   dataType instanceof UnsignedLongDataType) {
-			write(String.format("\tdc.l $%08x", bytesToBigEndianLong(data, dataOffset) & 0xffffffff));
+			write("\tdc.l " + toHex(bytesToBigEndianLong(data, dataOffset), 4));
 		} else if (dataType instanceof SignedDWordDataType) {
 			write(String.format("\tdc.l %d", bytesToBigEndianLong(data, dataOffset)));
 		} else if (dataType instanceof QWordDataType) {
@@ -1219,28 +1301,31 @@ public class AmigaExporter implements CancelledListener {
 		
 		if (size == 1) {
 			value = data[dataOffset];
-			write(String.format("\tdc.b $%02x", value & 0xff));
+			write("\tdc.b " + toHex(value, 1));
 		} else if (size == 2) {
 			value = readDisplacement(data, dataOffset);
-			write(String.format("\tdc.w $%04x", value & 0xffff));
+			write("\tdc.w " + toHex(value, 2));
 		} else if (size == 4) {
 			value = bytesToBigEndianLong(data, dataOffset);
-			write(String.format("\tdc.l $%08x", value & 0xffffffff));
+			write("\tdc.l " + toHex(value, 4));
 		} else {
 			throw new RuntimeException(String.format("Invalid enum value size %d at address %08x.", size, address.getUnsignedOffset()));
 		}
 		
-		String name = dataType.getName(value);
-		
-		if (name == null) {
-			// Try flag values (EnumValue1 | EnumValue2)
-			name = getFlagEnumNames(dataType, value);
-		}
-		
-		if (name != null) {
-			write(" ; = " + name);
-		} else {
-			write(String.format(" ; Invalid enum value: %d", value));
+		if (writeComments) {
+
+			String name = dataType.getName(value);
+			
+			if (name == null) {
+				// Try flag values (EnumValue1 | EnumValue2)
+				name = getFlagEnumNames(dataType, value);
+			}
+
+			if (name != null) {
+				write(" ; = " + name);
+			} else {
+				write(String.format(" ; Invalid enum value: %d", value));
+			}
 		}
 	}
 	
