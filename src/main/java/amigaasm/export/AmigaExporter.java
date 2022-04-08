@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -14,6 +15,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import org.python.antlr.ast.Tuple;
 
 import amigaasm.AmigaAsmExporter;
 import ghidra.app.util.Option;
@@ -76,6 +79,7 @@ public class AmigaExporter implements CancelledListener {
 	private Map<Integer, String> customLabels = new HashMap<Integer, String>();
 	private Map<Address, String> customLabelsByAddress = new HashMap<Address, String>();
 	private Map<Address, Integer> lineNumbersByAddress = new HashMap<Address, Integer>();
+	private Map<Integer, Address> addressesAtLineNumbers = new HashMap<Integer, Address>();
 	private List<String> lines = new ArrayList<String>();
 	private String currentLine = "";
 	
@@ -168,9 +172,13 @@ public class AmigaExporter implements CancelledListener {
 		// in 'customLabels' but only in 'customLabelsByAddress'.
 		// So move them over now.
 		
+		
+		List<AbstractMap.SimpleEntry<String, String>> labelReplacements = new ArrayList<AbstractMap.SimpleEntry<String, String>>();
+		
 		customLabelsByAddress.forEach((Address addr, String label) -> {
 			
 			int offset = 0;
+			Address initialAddress = addr;
 			
 			while (true) {
 				
@@ -178,8 +186,34 @@ public class AmigaExporter implements CancelledListener {
 
 				if (line != null) {
 					
-					if (!customLabels.containsKey(line)) {
-						customLabels.put(line + offset, label);
+					Address nextLineAddress = addressesAtLineNumbers.get(line + 1);
+					
+					while (nextLineAddress != null && nextLineAddress.getUnsignedOffset() > initialAddress.getUnsignedOffset()) {
+						++line;
+						nextLineAddress = addressesAtLineNumbers.get(line + 1);
+					}
+					
+					Address lineAddress = addressesAtLineNumbers.get(line);
+					long offsetInLine = initialAddress.getUnsignedOffset() - lineAddress.getUnsignedOffset();
+					
+					if (offsetInLine == 0) {
+					
+						if (!customLabels.containsKey(line)) {
+							customLabels.put(line + offset, label);
+						}
+					} else { // the label is inside the line (e.g. partial string)
+					
+						// In this case we have to replace the label by <LineLabel+N>
+						AsmReference ref = references.get(lineAddress.getUnsignedOffset());
+						String baseLabel;
+						
+						if (ref == null) {
+							baseLabel = String.format("LAB_%08x", lineAddress.getUnsignedOffset());
+							customLabels.put(line, baseLabel);
+						} else {
+							baseLabel = ref.Label;
+						}
+						labelReplacements.add(new AbstractMap.SimpleEntry<String, String>(baseLabel, baseLabel + String.format("+%d", offsetInLine)));
 					}
 					
 					break;
@@ -203,7 +237,15 @@ public class AmigaExporter implements CancelledListener {
 			if (customLabel != null) {
 				writer.write(customLabel + ":" + newline);
 			}
-			writer.write(lines.get(i) + newline);
+			String line = lines.get(i);
+			for (int r = 0; r < labelReplacements.size(); ++r) {
+				AbstractMap.SimpleEntry<String, String> labelReplacement = labelReplacements.get(r);
+				// Don't replace real labels like <label>:
+				line = line.replace(labelReplacement.getKey() + ":", "%%%%");
+				line = line.replace(labelReplacement.getKey(), labelReplacement.getValue());
+				line = line.replace("%%%%", labelReplacement.getKey() + ":");
+			}
+			writer.write(line + newline);
 		}
 		
 		writer.flush();
@@ -448,7 +490,7 @@ public class AmigaExporter implements CancelledListener {
 			ProgramDataTypeManager typeManager,	int hunkIndex, TaskMonitor monitor) {
 		
 		long addressOffset = address.getUnsignedOffset();
-		if (addressOffset == 0x0022af3c) {
+		if (addressOffset == 0x00224938) {
 			int x = 0; // TODO: REMOVE
 		}
 		String label = codeUnit.getLabel();
@@ -467,7 +509,9 @@ public class AmigaExporter implements CancelledListener {
 			}
 		}
 		
-		lineNumbersByAddress.put(address, getLineNumber());
+		int lineNumber = getLineNumber();
+		lineNumbersByAddress.put(address, lineNumber);
+		addressesAtLineNumbers.put(lineNumber, address);
 		
 		if (currentHunkType.equals("CODE") && !(codeUnit instanceof Data)) {
 
@@ -1140,6 +1184,7 @@ public class AmigaExporter implements CancelledListener {
 		}
 		
 		String suffix = "";
+		Address initialAddress = address;
 		
 		for (int i = 0; i < 5; ++i) { // look if there is a label at the next 4 bytes as well
 			
@@ -1174,9 +1219,9 @@ public class AmigaExporter implements CancelledListener {
 		// If no label was found, add one
 		if (fallback >= 0x21f000 && fallback < 0x31f000) {		
 			customLabel = String.format("LAB_" + toHex(fallback, 4, false));
-			customLabelsByAddress.put(address, customLabel);
+			customLabelsByAddress.put(initialAddress, customLabel);
 			
-			Integer lineNumberOfAddress = lineNumbersByAddress.get(address);
+			Integer lineNumberOfAddress = lineNumbersByAddress.get(initialAddress);
 			
 			if (lineNumberOfAddress != null) {
 				customLabels.put(lineNumberOfAddress, customLabel);
