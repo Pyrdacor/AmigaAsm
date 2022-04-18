@@ -301,7 +301,7 @@ public class AmigaExporter implements CancelledListener {
 				if (!addedBssWord && currentHunkType.equals("BSS")) {
 					
 					writeLine("DAT_ScrollOffset:");
-					writeLine("\tdx.w 0");
+					writeLine("\tdx.w 1");
 					addedBssWord = true;
 				}
 				if (lastHunkIndex != -1) {
