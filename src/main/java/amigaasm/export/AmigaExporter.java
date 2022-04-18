@@ -82,6 +82,8 @@ public class AmigaExporter implements CancelledListener {
 	private Map<Integer, Address> addressesAtLineNumbers = new HashMap<Integer, Address>();
 	private List<String> lines = new ArrayList<String>();
 	private String currentLine = "";
+	// TODO: REMOVE, Ambermoon specific
+	private boolean addedBssWord = false;
 	
 	public void cancelled() {
 		exportCancelled = true;
@@ -138,6 +140,9 @@ public class AmigaExporter implements CancelledListener {
 		lineNumbersByAddress.clear();
 		lines.clear();
 		currentLine = "";
+		
+		// TODO: REMOVE, Ambermoon specific
+		addedBssWord = false;
 			
 		monitor.addCancelledListener(this);
 			
@@ -188,12 +193,12 @@ public class AmigaExporter implements CancelledListener {
 					
 					Address nextLineAddress = addressesAtLineNumbers.get(line + 1);
 					
-					while (nextLineAddress != null && nextLineAddress.getUnsignedOffset() > initialAddress.getUnsignedOffset()) {
+					while (nextLineAddress != null && nextLineAddress.getUnsignedOffset() < initialAddress.getUnsignedOffset()) {
 						++line;
 						nextLineAddress = addressesAtLineNumbers.get(line + 1);
 					}
 					
-					Address lineAddress = addressesAtLineNumbers.get(line);
+					Address lineAddress = addr;
 					long offsetInLine = initialAddress.getUnsignedOffset() - lineAddress.getUnsignedOffset();
 					
 					if (offsetInLine == 0) {
@@ -213,7 +218,7 @@ public class AmigaExporter implements CancelledListener {
 						} else {
 							baseLabel = ref.Label;
 						}
-						labelReplacements.add(new AbstractMap.SimpleEntry<String, String>(baseLabel, baseLabel + String.format("+%d", offsetInLine)));
+						labelReplacements.add(new AbstractMap.SimpleEntry<String, String>(label, baseLabel + String.format("+%d", offsetInLine)));
 					}
 					
 					break;
@@ -230,6 +235,12 @@ public class AmigaExporter implements CancelledListener {
 		
 		OutputStreamWriter writer = new OutputStreamWriter(
             new FileOutputStream(file.getPath()), "UTF-8");
+		
+		// TODO: REMOVE, Ambermoon specific
+		labelReplacements.add(new AbstractMap.SimpleEntry<String, String>("_AbsExecBase", "$4"));
+		labelReplacements.add(new AbstractMap.SimpleEntry<String, String>("_ciaa", "$bfe001"));
+		labelReplacements.add(new AbstractMap.SimpleEntry<String, String>("_ciab", "$bfd000"));
+		labelReplacements.add(new AbstractMap.SimpleEntry<String, String>("_custom", "$dff000"));
 		
 		for (int i = 0; i < lines.size(); ++i) {
 			int lineNumber = i + 1;
@@ -286,9 +297,16 @@ public class AmigaExporter implements CancelledListener {
 			} else {
 				Pattern hunkNamePattern = Pattern.compile("([A-Z]+)_([0-9]+)");
 				Matcher matcher = hunkNamePattern.matcher(hunkName);
+				// TODO: REMOVE, Ambermoon specific
+				if (!addedBssWord && currentHunkType.equals("BSS")) {
+					
+					writeLine("DAT_ScrollOffset:");
+					writeLine("\tdx.w 0");
+					addedBssWord = true;
+				}
 				if (lastHunkIndex != -1) {
 					writeLine(";   }"); // end of section
-				}
+				}				
 				if (writeComments) {
 					writeLine();
 					writeLine("; " + headerBar);
