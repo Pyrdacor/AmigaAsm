@@ -441,6 +441,30 @@ public class AmigaExporter implements CancelledListener {
 		return reg;
 	}
 	
+	private int getExtensionSizeByMode(int mode, int reg, int immediateValueBytes) {
+
+		switch (mode) {
+			case 5:
+			case 6:
+				return 2;
+			case 7:
+				switch (reg) {
+					case 0:
+					case 2:
+					case 3:
+						return 2;
+					case 1:
+						return 4;
+					case 4:
+						return immediateValueBytes;
+					default:
+						return 0;
+				}
+			default:
+				return 0;
+		}
+	}
+	
 	private String parseAddressMode(Address address, int mode, int reg, byte[] data,
 		int extensionOffset, int immediateValueBytes) {
 		
@@ -732,15 +756,20 @@ public class AmigaExporter implements CancelledListener {
 									// TODO: I guess there are more special commands which always use dynamic addressing
 									String arg = parseAddressMode(address, mode, reg, bytes, byteOffset, 0); // immediate won't work with 0, which is ok
 									write(prefix + arg);
+									byteOffset += getExtensionSizeByMode(mode, reg, 0);
 								}
 							} else if (type == OperandType.SCALAR) {
-								if (opcode.equals("cmpa") || opcode.equals("adda") ||
-									opcode.equals("suba") || opcode.equals("movea")) {
+								if (mnemonic.endsWith(".l") && (opcode.equals("cmpa") || opcode.equals("adda") ||
+									opcode.equals("suba") || opcode.equals("movea"))) {
 									// Ghidra encodes addresses as immediate values for some instructions
 									long offset = inst.getScalar(i).getUnsignedValue();
 									Address addr = memory.getProgram().getAddressMap().getImageBase().add(offset);
 									String targetLabel = getLabelForAddress(addr, offset);
-									write(prefix + targetLabel);
+									if (opcode.equals("movea")) {
+										write(prefix + targetLabel);
+									} else {
+										write(prefix + "#" + targetLabel);
+									}
 								} else {
 									boolean handled = false;
 									if (mnemonic.equals("move.l")) {
@@ -751,7 +780,7 @@ public class AmigaExporter implements CancelledListener {
 										if (offset >= 0x21f000 && offset < 0x31f000) {
 											Address addr = memory.getProgram().getAddressMap().getImageBase().add(offset);
 											String targetLabel = getLabelForAddress(addr, offset);
-											write(prefix + targetLabel);
+											write(prefix + "#" + targetLabel);
 											handled = true;
 										}
 									}
@@ -817,6 +846,7 @@ public class AmigaExporter implements CancelledListener {
 																write(prefix + getIndexExpression(address, "PC", bytes, byteOffset, true));
 															}
 															
+															byteOffset += 2;
 															prefix = ",";
 															found = true;
 															continue;	
@@ -842,6 +872,7 @@ public class AmigaExporter implements CancelledListener {
 																write(prefix + getIndexExpression(address, "PC", bytes, byteOffset, true));
 															}
 															
+															byteOffset += 2;
 															prefix = ",";
 															found = true;
 															continue;	
@@ -853,7 +884,13 @@ public class AmigaExporter implements CancelledListener {
 									
 											Address addr = op.getToAddress();		
 											String targetLabel = getLabelForAddress(addr, null);
-											write(prefix + targetLabel);
+											if (i == 0 && mnemonic.equals("move.l") && (bytes[1] & 0x3f) == 0x3c) {
+												// move.l in immediate mode might move #label to something
+												write(prefix + "#" + targetLabel);
+											} else {
+												write(prefix + targetLabel);
+											}
+											byteOffset += 4;
 											found = true;
 
 										} else if (op.isStackReference()) {
@@ -1449,7 +1486,7 @@ public class AmigaExporter implements CancelledListener {
 			Address address, int hunkIndex) {
 
 		if (currentHunkType.equals("BSS")) {
-			write(String.format("\tdx.l %d", dataType.getLength()));
+			write(String.format("\tdx.b %d", dataType.getLength()));
 		} else {
 		
 			String name = dataType.getName();
