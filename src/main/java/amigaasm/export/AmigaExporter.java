@@ -329,7 +329,13 @@ public class AmigaExporter implements CancelledListener {
 			}
 
 			if (hunkIndex != -1) {
-				writeLine(String.format("\tsection\thunk%02d,%s", hunkIndex, currentHunkType));
+				String section = String.format("\tsection\thunk%02d,%s", hunkIndex, currentHunkType);
+				// TODO: REMOVE, Ambermoon specific
+				// TODO: Only for AM2_CPU!
+				if (hunkIndex == 1 || hunkIndex == 3) {
+					section += ",chip"; // force chip one first BSS and first data hunk
+				}
+				writeLine(section);
 				if (writeComments) {
 					writeLine(";   {"); // begin section
 				}
@@ -508,7 +514,7 @@ public class AmigaExporter implements CancelledListener {
 			ProgramDataTypeManager typeManager,	int hunkIndex, TaskMonitor monitor) {
 		
 		long addressOffset = address.getUnsignedOffset();
-		if (addressOffset == 0x00224938) {
+		if (addressOffset == 0x00234274) {
 			int x = 0; // TODO: REMOVE
 		}
 		String label = codeUnit.getLabel();
@@ -728,11 +734,28 @@ public class AmigaExporter implements CancelledListener {
 									write(prefix + arg);
 								}
 							} else if (type == OperandType.SCALAR) {
-								String p = prefix;
-								if (!opcode.equals("lea") && !opcode.equals("pea")) {
-									p += "#"; // prefix a '#' if not lea or pea
+								if (opcode.equals("cmpa") || opcode.equals("adda") ||
+									opcode.equals("suba") || opcode.equals("movea")) {
+									// Ghidra encodes addresses as immediate values for some instructions
+									long offset = inst.getScalar(i).getUnsignedValue();
+									Address addr = memory.getProgram().getAddressMap().getImageBase().add(offset);
+									String targetLabel = getLabelForAddress(addr, offset);
+									write(prefix + targetLabel);
+								} else {
+									String p = prefix;
+									if (!opcode.equals("lea") && !opcode.equals("pea")) {
+										p += "#"; // prefix a '#' if not lea or pea
+									}
+									write(p + inst.getScalar(i).toString(16, true, true, "$", ""));
 								}
-								write(p + inst.getScalar(i).toString(16, true, true, "$", ""));
+								if (!opcode.endsWith("q")) {
+									// quick instructions store the scalar inside the instruction word
+									if (mnemonic.toLowerCase().endsWith("b") || mnemonic.toLowerCase().endsWith("w")) {
+										byteOffset += 2;
+									} else {
+										byteOffset += 4;
+									}
+								}
 							} else if ((type & OperandType.REGISTER) != 0) {
 								String reg = trimRegSuffix(inst.getRegister(i).toString());
 								if ((type & OperandType.INDIRECT) != 0) {
