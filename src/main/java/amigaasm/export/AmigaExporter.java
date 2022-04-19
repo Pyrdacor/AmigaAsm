@@ -742,11 +742,26 @@ public class AmigaExporter implements CancelledListener {
 									String targetLabel = getLabelForAddress(addr, offset);
 									write(prefix + targetLabel);
 								} else {
-									String p = prefix;
-									if (!opcode.equals("lea") && !opcode.equals("pea")) {
-										p += "#"; // prefix a '#' if not lea or pea
+									boolean handled = false;
+									if (mnemonic.equals("move.l")) {
+										// Sometimes Ghidra also encodes addresses as immediate values for move instructions
+										// TODO: This is not safe as it is totally valid to move such values
+										//       Here the opcode has to be parsed manually.
+										long offset = inst.getScalar(i).getUnsignedValue();
+										if (offset >= 0x21f000 && offset < 0x31f000) {
+											Address addr = memory.getProgram().getAddressMap().getImageBase().add(offset);
+											String targetLabel = getLabelForAddress(addr, offset);
+											write(prefix + targetLabel);
+											handled = true;
+										}
 									}
-									write(p + inst.getScalar(i).toString(16, true, true, "$", ""));
+									if (!handled) {
+										String p = prefix;
+										if (!opcode.equals("lea") && !opcode.equals("pea")) {
+											p += "#"; // prefix a '#' if not lea or pea
+										}
+										write(p + inst.getScalar(i).toString(16, true, true, "$", ""));
+									}
 								}
 								if (!opcode.endsWith("q")) {
 									// quick instructions store the scalar inside the instruction word
@@ -1419,6 +1434,12 @@ public class AmigaExporter implements CancelledListener {
 		String reg = (flags & 0x80) == 0 ? "D" : "A";
 			
 		reg += String.format("%d", (flags >> 4) & 0x7);
+		
+		if ((flags & 0x08) == 0) { // word sized index
+			reg += ".w";
+		} else { // long sized index
+			reg += ".l";
+		}
 		
 		return String.format("(%s,%s,%s)", d, baseRegister, reg);
 	}
