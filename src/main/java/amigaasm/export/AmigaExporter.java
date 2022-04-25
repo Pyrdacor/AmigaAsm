@@ -761,15 +761,13 @@ public class AmigaExporter implements CancelledListener {
 							} else if (type == OperandType.SCALAR) {
 								if (mnemonic.endsWith(".l") && (opcode.equals("cmpa") || opcode.equals("adda") ||
 									opcode.equals("suba") || opcode.equals("movea"))) {
-									// Ghidra encodes addresses as immediate values for some instructions
+									// The address instructions often use immediate values but as
+									// they always work with addresses, they are subject to relocations
+									// and therefore are treated as labels.
 									long offset = inst.getScalar(i).getUnsignedValue();
 									Address addr = memory.getProgram().getAddressMap().getImageBase().add(offset);
 									String targetLabel = getLabelForAddress(addr, offset);
-									if (opcode.equals("movea")) {
-										write(prefix + targetLabel);
-									} else {
-										write(prefix + "#" + targetLabel);
-									}
+									write(prefix + "#" + targetLabel);
 								} else {
 									boolean handled = false;
 									if (mnemonic.equals("move.l")) {
@@ -937,6 +935,10 @@ public class AmigaExporter implements CancelledListener {
 			throw new RuntimeException("Unable to read data bytes.");
 		}
 		
+		if (mnemonic.trim().endsWith("*")) {
+			writeLine("\t; " + mnemonic);
+		}
+		
 		writeData(mnemonic, bytes, 0, typeManager, monitor, address, hunkIndex, memory);
 		
 		return true;
@@ -1055,12 +1057,28 @@ public class AmigaExporter implements CancelledListener {
 				write("\tdc.b " + toHex(data[dataOffset], 1));
 			}
 			return 1;
+		} else if (mnemonic.equals("sdb")) {
+			if (isBss) {
+				write("\tdx.b 1");
+			} else {
+				data = ensureData(data, memory, address, 1);
+				write(String.format("\tdc.b %d", data[dataOffset]));
+			}
+			return 1;
 		} else if (mnemonic.equals("dw")) {
 			if (isBss) {
 				write("\tdx.w 1");
 			} else {
 				data = ensureData(data, memory, address, 2);
 				write("\tdc.w " + toHex(data, dataOffset, 2));
+			}
+			return 2;
+		} else if (mnemonic.equals("sdw")) {
+			if (isBss) {
+				write("\tdx.w 1");
+			} else {
+				data = ensureData(data, memory, address, 2);
+				write(String.format("\tdc.w %d", readShort(data, dataOffset)));
 			}
 			return 2;
 		} else if (mnemonic.equals("ddw") || mnemonic.equals("dl")) {
@@ -1071,7 +1089,7 @@ public class AmigaExporter implements CancelledListener {
 				write("\tdc.l " + toHex(data, dataOffset, 4));
 			}
 			return 4;
-		} else if (mnemonic.equals("addr")) {
+		} else if (mnemonic.equals("addr") || mnemonic.trim().endsWith("*")) {
 			if (isBss) {
 				write("\tdx.l 1");
 			} else {
@@ -1135,7 +1153,9 @@ public class AmigaExporter implements CancelledListener {
 						if (typeName.equals("ds") || typeName.equals("db") ||
 							typeName.equals("dw") || typeName.equals("ddw") ||
 							typeName.equals("dl") || typeName.equals("addr") ||
-							typeName.equals("char") || typeName.equals("dq")) {
+							typeName.equals("char") || typeName.equals("dq") ||
+							typeName.equals("sdw") || typeName.equals("sdb") ||
+							typeName.trim().endsWith("*")) {
 							if (writeComments) {
 								writeLine("\t; " + mnemonic);
 							}
