@@ -3,6 +3,7 @@ package amigaasm.export;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStreamWriter;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -55,6 +56,7 @@ import ghidra.program.model.listing.Listing;
 import ghidra.program.model.mem.Memory;
 import ghidra.program.model.mem.MemoryAccessException;
 import ghidra.program.model.mem.MemoryBlock;
+import ghidra.program.model.mem.MemoryBlockSourceInfo;
 import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.StackReference;
 import ghidra.util.task.CancelledListener;
@@ -145,7 +147,7 @@ public class AmigaExporter implements CancelledListener {
 		addedBssWord = false;
 			
 		monitor.addCancelledListener(this);
-			
+		
 		ProgramDataTypeManager typeManager = programDB.getDataTypeManager();		
 		
 		Memory memory = programDB.getMemory();
@@ -332,8 +334,10 @@ public class AmigaExporter implements CancelledListener {
 				String section = String.format("\tsection\thunk%02d,%s", hunkIndex, currentHunkType);
 				// TODO: REMOVE, Ambermoon specific
 				// TODO: Only for AM2_CPU!
-				if (hunkIndex == 1 || hunkIndex == 3) {
-					section += ",chip"; // force chip one first BSS and first data hunk
+				if (memory.getProgram().getExecutablePath().contains("AM2_CPU")) {
+					if (hunkIndex == 1 || hunkIndex == 3) {
+						section += ",chip"; // force chip one first BSS and first data hunk
+					}
 				}
 				writeLine(section);
 				if (writeComments) {
@@ -538,7 +542,7 @@ public class AmigaExporter implements CancelledListener {
 			ProgramDataTypeManager typeManager,	int hunkIndex, TaskMonitor monitor) {
 		
 		long addressOffset = address.getUnsignedOffset();
-		if (addressOffset == 0x00234274) {
+		if (addressOffset == 0x0021f4a0) {
 			int x = 0; // TODO: REMOVE
 		}
 		String label = codeUnit.getLabel();
@@ -737,7 +741,8 @@ public class AmigaExporter implements CancelledListener {
 							Instruction inst = (Instruction)codeUnit;
 							int type = inst.getOperandType(i);
 							if (type == OperandType.DYNAMIC ||
-								type == (OperandType.DYNAMIC | OperandType.ADDRESS)) { // (A0)+ etc
+								type == (OperandType.DYNAMIC | OperandType.ADDRESS) ||
+								type == (OperandType.DYNAMIC | OperandType.INDIRECT)) { // (A0)+ etc
 								int mode = (bytes[1] >> 3) & 0x7;
 								int reg = bytes[1] & 0x7;
 								if (i == 1 && (opcode.equals("move"))) {
@@ -785,9 +790,21 @@ public class AmigaExporter implements CancelledListener {
 									if (!handled) {
 										String p = prefix;
 										if (!opcode.equals("lea") && !opcode.equals("pea")) {
-											p += "#"; // prefix a '#' if not lea or pea
+											write(p + "#" + inst.getScalar(i).toString(16, true, true, "$", ""));
+										} else {
+											// this is always a reference!
+											long value = inst.getScalar(i).getSignedValue();
+											if (value >= 0x20f000 && value < 0x21f000) {
+												value -= 0x21f000;
+												write(p + String.format("start%d", value)); // e.g. start-4
+											} else if (value < 0) {
+												write(p + String.format("%d", value));
+											} else if (value < 0x21f000 || value >= 0x31f000) {
+												write(p + this.toHex(value, 4));
+											} else {
+												this.getLabelForAddress(address, value);
+											}
 										}
-										write(p + inst.getScalar(i).toString(16, true, true, "$", ""));
 									}
 								}
 								if (!opcode.endsWith("q")) {
@@ -1047,7 +1064,7 @@ public class AmigaExporter implements CancelledListener {
 		
 		if (mnemonic.equals("ds")) {
 			data = ensureData(data, memory, address, 1);
-			write("\tdc.b " + getStringLiteralFromData(data, dataOffset));
+			write("\tdc.b " + getStringLiteralFromData(data, dataOffset, false));
 			return data.length - dataOffset;
 		} else if (mnemonic.equals("db")) {
 			if (isBss) {
@@ -1136,8 +1153,12 @@ public class AmigaExporter implements CancelledListener {
 						return size;
 					} else {
 						data = ensureData(data, memory, address, length * elemType.getLength());
-						writeArray(length, elemType, typeManager, data,
-								   dataOffset, monitor, address, hunkIndex);
+						if (mnemonic.startsWith("char[") && !mnemonic.contains("][")) {
+							write("\tdc.b " + getStringLiteralFromData(data, dataOffset, true));
+						} else {
+							writeArray(length, elemType, typeManager, data,
+									   dataOffset, monitor, address, hunkIndex);
+						}
 						return data.length;
 					}
 					
@@ -1555,15 +1576,22 @@ public class AmigaExporter implements CancelledListener {
 		if (currentHunkType.equals("BSS")) {
 			write(String.format("\tdx.b %d", dimension * elementType.getLength()));
 		} else {
-		
-			for (int i = 0; i < dimension; ++i) {
-				writeStructComponent(elementType, data, dataOffset, typeManager, monitor, address, hunkIndex);
-				int size = elementType.getLength();
-				dataOffset += size;
-				address = address.add(size);
-				
-				if (i != dimension - 1) {
-					writeLine();
+			if (elementType instanceof CharDataType) {
+				byte[] buffer = new byte[dimension];
+				for (int i = 0; i < dimension; ++i) {
+					buffer[i] = data[dataOffset + i];
+				}
+				write("\tdc.b " + getStringLiteralFromData(buffer, 0, true));
+			} else {
+				for (int i = 0; i < dimension; ++i) {
+					writeStructComponent(elementType, data, dataOffset, typeManager, monitor, address, hunkIndex);
+					int size = elementType.getLength();
+					dataOffset += size;
+					address = address.add(size);
+					
+					if (i != dimension - 1) {
+						writeLine();
+					}
 				}
 			}
 		}
@@ -1739,13 +1767,21 @@ public class AmigaExporter implements CancelledListener {
 		throw new RuntimeException("Invalid data type of Java type " + dataType.getClass().getName());
 	}
 	
-	private static String getStringLiteralFromData(byte[] data, int offset) {
+	private static String getStringLiteralFromData(byte[] data, int offset, boolean charArray) {
 		
-		String str = new String(data, offset, data.length - offset - 1, charset);
-		int len = str.length();
+		int len = data.length - offset;
+		if (!charArray) {
+			--len;
+		}
+		String str = new String(data, offset, len, charset);
+		len = str.length();
 		
 		if (len == 0) {
-			return "\"\",0";
+			if (charArray) {
+				return "\"\"";
+			} else {
+				return "\"\",0";
+			}
 		}
 		
 		String output = "";
@@ -1797,6 +1833,6 @@ public class AmigaExporter implements CancelledListener {
 			output += "\"";
 		}
 		
-		return output + ",0";
+		return charArray ? output : output + ",0";
 	}
 }
