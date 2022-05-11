@@ -240,6 +240,7 @@ public class AmigaExporter implements CancelledListener {
 		
 		// TODO: REMOVE, Ambermoon specific
 		labelReplacements.add(new AbstractMap.SimpleEntry<String, String>("_AbsExecBase", "$4"));
+		labelReplacements.add(new AbstractMap.SimpleEntry<String, String>("DAT_0000006c", "$6c"));
 		labelReplacements.add(new AbstractMap.SimpleEntry<String, String>("_ciaa", "$bfe001"));
 		labelReplacements.add(new AbstractMap.SimpleEntry<String, String>("_ciab", "$bfd000"));
 		labelReplacements.add(new AbstractMap.SimpleEntry<String, String>("_custom", "$dff000"));
@@ -335,8 +336,8 @@ public class AmigaExporter implements CancelledListener {
 				// TODO: REMOVE, Ambermoon specific
 				// TODO: Only for AM2_CPU!
 				if (memory.getProgram().getExecutablePath().contains("AM2_CPU")) {
-					if (hunkIndex == 1 || hunkIndex == 3) {
-						section += ",chip"; // force chip one first BSS and first data hunk
+					if (hunkIndex == 1 || hunkIndex == 3 || hunkIndex == 10) {
+						section += ",chip"; // force chip on first BSS and first data hunk (and on new blit code hunk)
 					}
 				}
 				writeLine(section);
@@ -542,7 +543,7 @@ public class AmigaExporter implements CancelledListener {
 			ProgramDataTypeManager typeManager,	int hunkIndex, TaskMonitor monitor) {
 		
 		long addressOffset = address.getUnsignedOffset();
-		if (addressOffset == 0x0021f4a0) {
+		if (addressOffset == 0x002901f6 - 8) {
 			int x = 0; // TODO: REMOVE
 		}
 		String label = codeUnit.getLabel();
@@ -895,6 +896,34 @@ public class AmigaExporter implements CancelledListener {
 													}
 												}
 												
+											}
+											
+											if (type == (OperandType.DYNAMIC | OperandType.ADDRESS | OperandType.INDIRECT) &&
+												(opcode.equals("jsr") || opcode.equals("jmp"))) {
+												
+												// handle jump towers
+												
+												int mode = (bytes[1] >> 3) & 0x7;
+												int reg = bytes[1] & 0x7;
+												
+												if (mode == 5) { // address with displacements
+													
+													int displacement = readShort(bytes, byteOffset);
+													String d = getDisplacement(address, displacement, 2, true);
+													write(prefix + String.format("(%s,%s)", d, getAddrRegisterName(reg)));
+													byteOffset += 2;
+													prefix = ",";
+													found = true;
+													continue;	
+													
+												} else if (mode == 6) { // address with index
+													
+													write(prefix + getIndexExpression(address, getAddrRegisterName(reg), bytes, byteOffset, true));
+													byteOffset += 2;
+													prefix = ",";
+													found = true;
+													continue;	
+												}
 											}
 									
 											Address addr = op.getToAddress();		

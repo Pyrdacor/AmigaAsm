@@ -221,13 +221,9 @@ LAB_0021f316:
 	move.w D7,DAT_0022102a
 	move.l #$00abacab,DAT_00221026
 	jsr FUN_DetermineAssemblyToRun
-	tst.b DAT_UseAM2CPU
-	bne.b LAB_0021f360
-	lea DAT_AM2BLIT,A1
-	bra.b LAB_0021f366
-LAB_0021f360:
+	move.b DAT_UseAM2CPU,DAT_LoaderVersionAndBlitterFlag
+	move.l DAT_LoaderVersionAndBlitterFlag,D3
 	lea DAT_AM2CPU,A1
-LAB_0021f366:
 	lea DAT_00221026,A0
 	jsr FUN_RunExecutable
 	tst.l D0
@@ -2555,7 +2551,7 @@ DAT_0022102d:
 ; Unknown data at address 0022102d.
 	dx.b 1
 DAT_UseAM2CPU:
-; Unknown data at address 0022102e.
+	; undefined1
 	dx.b 1
 DAT_0022102f:
 ; Unknown data at address 0022102f.
@@ -2658,4 +2654,23 @@ DAT_0022108a:
 	dx.b 1
 ; Unknown data at address 0022108f.
 	dx.b 1
+DAT_ScrollOffset:
+	dx.w 1
+;   }
+
+; #######################
+; # HUNK04 - DATA       #
+; #######################
+	section	hunk04,DATA
+;   {
+DAT_LoaderVersionAndBlitterFlag:
+	dc.b $00 ; Leave this at 0!
+			; It will be replaced by
+			; the blitter flag before
+			; passing the whole long
+			; to AM2_CPU.
+DAT_LoaderVersionMajor:
+	dc.b $01
+DAT_LoaderVersionMinor:
+	dc.w $0000
 ;   }
