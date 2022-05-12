@@ -909,7 +909,7 @@ public class AmigaExporter implements CancelledListener {
 												if (mode == 5) { // address with displacements
 													
 													int displacement = readShort(bytes, byteOffset);
-													String d = getDisplacement(address, displacement, 2, true);
+													String d = getDisplacement(address, displacement, 2, false);
 													write(prefix + String.format("(%s,%s)", d, getAddrRegisterName(reg)));
 													byteOffset += 2;
 													prefix = ",";
@@ -918,7 +918,7 @@ public class AmigaExporter implements CancelledListener {
 													
 												} else if (mode == 6) { // address with index
 													
-													write(prefix + getIndexExpression(address, getAddrRegisterName(reg), bytes, byteOffset, true));
+													write(prefix + getIndexExpression(address, getAddrRegisterName(reg), bytes, byteOffset, false));
 													byteOffset += 2;
 													prefix = ",";
 													found = true;
