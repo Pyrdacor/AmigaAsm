@@ -57,6 +57,7 @@ import ghidra.program.model.mem.Memory;
 import ghidra.program.model.mem.MemoryAccessException;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.mem.MemoryBlockSourceInfo;
+import ghidra.program.model.mem.MemoryBlockType;
 import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.StackReference;
 import ghidra.util.task.CancelledListener;
@@ -125,6 +126,19 @@ public class AmigaExporter implements CancelledListener {
 		}
 	}
 	
+	private static boolean isSupportedBlock(MemoryBlock block) {
+		String blockName = block.getName();
+		
+		if (blockName.startsWith("CODE") ||
+			blockName.startsWith("DATA") ||
+			blockName.startsWith("BSS")) {
+			return true;
+		}
+		
+		return false;
+	}
+	
+	
 	public boolean export(File file, ProgramDB programDB,
 			TaskMonitor monitor) throws ExporterException, IOException {
 		
@@ -144,24 +158,45 @@ public class AmigaExporter implements CancelledListener {
 		currentLine = "";
 		
 		// TODO: REMOVE, Ambermoon specific
-		addedBssWord = false;
+		addedBssWord = true;
 			
 		monitor.addCancelledListener(this);
 		
-		ProgramDataTypeManager typeManager = programDB.getDataTypeManager();		
+		ProgramDataTypeManager typeManager = programDB.getDataTypeManager();
 		
 		Memory memory = programDB.getMemory();
 		AddressIterator addressIter = memory.getAddresses(true);
 		listing = programDB.getListing();
 		MemoryBlock[] blocks = memory.getBlocks();
 		
+		Address lastSupportedHunkEndAddress = null;
+		
+		for (MemoryBlock block : blocks) {
+			if (isSupportedBlock(block)) {
+				Address end = block.getEnd();
+				if (lastSupportedHunkEndAddress == null || lastSupportedHunkEndAddress.compareTo(end) < 0) {
+					lastSupportedHunkEndAddress = end;
+				}
+			}
+		}
+					
 		while (!exportCancelled && addressIter.hasNext()) {
 			
 			Address address = addressIter.next();
 			MemoryBlock block = memory.getBlock(address);
-			int blockIndex = Arrays.binarySearch(blocks, block);
 			
-			try {			
+			if (!isSupportedBlock(block)) {
+				
+				if (address.compareTo(lastSupportedHunkEndAddress) >= 0) {
+					break;
+				}
+				
+				continue;
+			}
+			
+			int blockIndex = Arrays.binarySearch(blocks, block);
+					
+			try {
 				processAddress(address, memory, typeManager,
 						blockIndex, block.getName(), block.getSize(), monitor);
 			} catch (Exception e) {
@@ -290,7 +325,7 @@ public class AmigaExporter implements CancelledListener {
 		
 		if (lastBlockIndex != blockIndex) {
 			int hunkIndex = -1;
-			if (address.getUnsignedOffset() < 0x21f000 || address.getUnsignedOffset() >= 0x31f000) {
+			if (address.getUnsignedOffset() < 0x21f000) {
 				currentHunkType = hunkName; // should be "EXEC"
 				if (currentHunkType.equals("EXEC")) {
 					System.out.println("Skipping EXEC section.");
